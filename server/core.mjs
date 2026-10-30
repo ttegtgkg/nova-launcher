@@ -86,15 +86,27 @@ export const DEFAULTS = {
   curseforgeApiKey: '',      // CurseForge 官方 API Key（可选，申请后填这里）
   closeLauncherOnPlay: false,
   showSnapshots: false,
+  theme: 'nova',             // 内置主题 key 或自定义主题 id（custom-xxxxxxxxxx）
+  wallpaper: {               // 自定义壁纸（file 为 null 表示没设）
+    file: null, opacity: 1, blur: 0, dim: 55, fit: 'cover', pos: 'center', updatedAt: 0,
+  },
 };
 
 export async function loadConfig() {
   const c = await readJson(CONFIG_FILE, {}) || {};
-  return { ...DEFAULTS, ...c, memory: { ...DEFAULTS.memory, ...(c.memory || {}) } };
+  return {
+    ...DEFAULTS, ...c,
+    memory: { ...DEFAULTS.memory, ...(c.memory || {}) },
+    wallpaper: { ...DEFAULTS.wallpaper, ...(c.wallpaper || {}) },
+  };
 }
 export async function saveConfig(patch) {
   const cur = await loadConfig();
-  const next = { ...cur, ...patch, memory: { ...cur.memory, ...(patch.memory || {}) } };
+  const next = {
+    ...cur, ...patch,
+    memory: { ...cur.memory, ...(patch.memory || {}) },
+    wallpaper: { ...cur.wallpaper, ...(patch.wallpaper || {}) },
+  };
   await writeJson(CONFIG_FILE, next);
   return next;
 }

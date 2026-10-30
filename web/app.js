@@ -70,20 +70,73 @@ const JVM_PRESETS = {};    // 由 /api/optimize 填充
 
 /* ------------------------------------------------------------ 主题 */
 
-const THEMES = [
+const BUILTIN_THEMES = [
   { key: 'nova', name: 'Nova', desc: '深空紫青 · 默认', bg: '#07080d', a: '#7c3aed', b: '#06b6d4', dot: '#22d3ee' },
   { key: 'midnight', name: '极夜', desc: '银灰冷调 · 克制', bg: '#08090a', a: '#475569', b: '#cbd5e1', dot: '#e2e8f0' },
   { key: 'ocean', name: '深海', desc: '蓝青 · 安静专注', bg: '#04090f', a: '#1d4ed8', b: '#06b6d4', dot: '#22d3ee' },
   { key: 'sunset', name: '落日', desc: '橙粉 · 温暖', bg: '#0d0705', a: '#ea580c', b: '#db2777', dot: '#ec4899' },
   { key: 'forest', name: '森野', desc: '绿青柠 · 清爽', bg: '#050a07', a: '#059669', b: '#65a30d', dot: '#a3e635' },
-  { key: 'cherry', name: '樱花', desc: '粉紫 · 柔和', bg: '#0b0610', a: '#db2777', b: '#9333ea', dot: '#ec4899' },
+  { key: 'cherry', name: '樱花', desc: '紫粉 · 柔和', bg: '#0b0610', a: '#db2777', b: '#9333ea', dot: '#ec4899' },
   { key: 'light', name: '晨曦', desc: '浅色 · 适合白天', bg: '#eef2f9', a: '#6366f1', b: '#0ea5e9', dot: '#0ea5e9' },
-];
+].map(t => ({ ...t, builtin: true }));
+
+/** 自定义主题（从服务端拉，带本地缓存以便首屏就能应用） */
+let CUSTOM_THEMES = [];
+let THEMES = BUILTIN_THEMES.slice();
+
+/** 把一条自定义主题换算成卡片预览需要的三个颜色 */
+function themeSwatches(t) {
+  const v = t.vars || {};
+  const pick = (...keys) => { for (const k of keys) if (v[k]) return v[k]; return null; };
+  return {
+    bg: pick('--bg', '--panel') || '#111318',
+    a: pick('--grad-a', '--accent') || '#7c3aed',
+    b: pick('--grad-b', '--accent-2') || '#06b6d4',
+    dot: pick('--accent-2', '--accent') || '#22d3ee',
+  };
+}
+
+function normalizeCustom(rec) {
+  const sw = themeSwatches(rec);
+  return {
+    key: rec.id, id: rec.id, name: rec.name || '自定义主题',
+    desc: rec.desc || '自定义', builtin: false,
+    vars: rec.vars || {}, css: rec.css || '',
+    bg: sw.bg, a: sw.a, b: sw.b, dot: sw.dot,
+  };
+}
+
+function rebuildThemeList(list) {
+  CUSTOM_THEMES = (list || []).map(normalizeCustom);
+  THEMES = BUILTIN_THEMES.concat(CUSTOM_THEMES);
+  try { localStorage.setItem('nova.themes', JSON.stringify(CUSTOM_THEMES)); } catch { }
+}
+
+/** 注入 / 清空自定义主题的样式表。切换主题时整段替换，不会残留污染别的主题。 */
+function injectCustomTheme(t) {
+  let st = document.getElementById('nova-custom-theme');
+  if (!st) {
+    st = document.createElement('style');
+    st.id = 'nova-custom-theme';
+    document.head.appendChild(st);
+  }
+  if (!t || t.builtin) { st.textContent = ''; return; }
+  const decls = Object.entries(t.vars || {})
+    .map(([k, v]) => `${k}:${v};`).join('');
+  st.textContent =
+    (decls ? `:root[data-theme="${t.key}"]{${decls}}\n` : '') + (t.css || '');
+}
+
+function findTheme(key) { return THEMES.find(x => x.key === key) || THEMES[0]; }
 
 function applyTheme(key, announce = false, persist = true) {
-  const t = THEMES.find(x => x.key === key) || THEMES[0];
+  const t = findTheme(key);
+  injectCustomTheme(t);
   document.documentElement.dataset.theme = t.key;
-  if (persist) { try { localStorage.setItem('nova.theme', t.key); } catch { } }
+  if (persist) {
+    try { localStorage.setItem('nova.theme', t.key); } catch { }
+    apiPost('/api/config', { theme: t.key }).catch(() => { });
+  }
   const cur = $('#themeCurrent');
   if (cur) cur.textContent = t.name;
   $$('.theme-card').forEach(c => c.classList.toggle('active', c.dataset.theme === t.key));
@@ -95,16 +148,146 @@ function renderThemeGrid() {
   if (!grid) return;
   const active = document.documentElement.dataset.theme || 'nova';
   grid.innerHTML = THEMES.map(t => `
-    <button class="theme-card ${t.key === active ? 'active' : ''}" data-theme="${t.key}">
-      <div class="theme-preview" style="background:${t.bg}">
-        <div class="tp-dot" style="background:${t.dot}"></div>
-        <div class="tp-bar" style="background:linear-gradient(90deg,${t.a},${t.b})"></div>
+    <button class="theme-card ${t.key === active ? 'active' : ''}" data-theme="${esc(t.key)}">
+      <div class="theme-preview" style="background:${esc(t.bg)}">
+        <div class="tp-dot" style="background:${esc(t.dot)}"></div>
+        <div class="tp-bar" style="background:linear-gradient(90deg,${esc(t.a)},${esc(t.b)})"></div>
       </div>
       <div class="theme-name"><span>${esc(t.name)}</span><span class="tick">✓</span></div>
       <div class="theme-desc">${esc(t.desc)}</div>
+      ${t.builtin ? '' : `<span class="tc-badge">自定义</span>
+        <span class="tc-del" data-tdel="${esc(t.key)}" title="删除这个主题">×</span>`}
     </button>`).join('');
-  $$('.theme-card', grid).forEach(b => b.onclick = () => applyTheme(b.dataset.theme, true));
+
+  $$('.theme-card', grid).forEach(b => b.onclick = (e) => {
+    if (e.target.closest('[data-tdel]')) return;
+    applyTheme(b.dataset.theme, true);
+  });
+  $$('[data-tdel]', grid).forEach(x => x.onclick = async (e) => {
+    e.stopPropagation();
+    const id = x.dataset.tdel;
+    const t = THEMES.find(v => v.key === id);
+    openModal(`<h2>删除主题「${esc(t?.name || id)}」？</h2>
+      <p class="modal-sub">文件 <code>data/themes/${esc(id)}.json</code> 会被删除，不可恢复。</p>`, {
+      okText: '删除', onOk: async () => {
+        try {
+          const r = await apiPost('/api/themes/delete', { id });
+          await loadThemes();
+          if (r.theme) applyTheme(r.theme, false);
+          toast('主题已删除', '', 'ok');
+        } catch (err) { toast('删除失败', err.message, 'error'); }
+      },
+    });
+  });
 }
+
+/** 从服务端同步自定义主题列表 */
+async function loadThemes() {
+  try {
+    const r = await apiGet('/api/themes');
+    rebuildThemeList(r.themes);
+    renderThemeGrid();
+    return r;
+  } catch {
+    return null;
+  }
+}
+
+/** 导入一个主题文件（文本） */
+async function importThemeFile(filename, text) {
+  try {
+    const r = await apiPost('/api/themes/import', { filename, text, apply: true });
+    await loadThemes();
+    applyTheme(r.theme.id, false);
+    const n = Object.keys(r.theme.vars || {}).length;
+    toast('主题已导入并应用', `${r.theme.name} · ${n} 个配色项`, 'ok', 5000);
+    return true;
+  } catch (e) {
+    toast('导入失败', filename + '：' + e.message, 'error', 7000);
+    return false;
+  }
+}
+
+/* ------------------------------------------------------------ 壁纸 */
+
+const WP_DEFAULT = { has: false, url: null, opacity: 1, blur: 0, dim: 55, fit: 'cover', pos: 'center', file: null };
+let WP = { ...WP_DEFAULT };
+
+/** 把壁纸设置写成 CSS 变量；这是唯一改画面的地方 */
+function applyWallpaper(wp) {
+  WP = { ...WP_DEFAULT, ...(wp || {}) };
+  const root = document.documentElement;
+  if (!WP.has || !WP.url) {
+    root.dataset.wallpaper = 'off';
+    root.style.setProperty('--wp-image', 'none');
+  } else {
+    root.dataset.wallpaper = 'on';
+    root.style.setProperty('--wp-image', `url("${WP.url}")`);
+  }
+  root.style.setProperty('--wp-opacity', String(WP.opacity));
+  root.style.setProperty('--wp-blur', WP.blur + 'px');
+  root.style.setProperty('--wp-dim', WP.dim + '%');
+  root.style.setProperty('--wp-size', WP.fit);
+  root.style.setProperty('--wp-pos', WP.pos || 'center');
+  try { localStorage.setItem('nova.wallpaper', JSON.stringify(WP)); } catch { }
+  renderWallpaperPanel();
+}
+
+function renderWallpaperPanel() {
+  const badge = $('#wallpaperBadge');
+  const prev = $('#wallpaperPreview');
+  if (!badge || !prev) return;
+  badge.textContent = WP.has ? '已启用' : '未设置';
+  badge.className = 'badge' + (WP.has ? ' ok' : '');
+
+  if (WP.has && WP.url) {
+    prev.classList.remove('empty');
+    prev.style.backgroundImage = `url("${WP.url}")`;
+    prev.style.backgroundSize = WP.fit;
+    $('#wpOverlay').style.display = '';
+    $('#wpOverlay').style.setProperty('--wp-dim', WP.dim + '%');
+    const tag = $('#wpTag');
+    tag.style.display = '';
+    tag.textContent = WP.file || '壁纸';
+  } else {
+    prev.classList.add('empty');
+    prev.style.backgroundImage = '';
+    $('#wpOverlay').style.display = 'none';
+    $('#wpTag').style.display = 'none';
+  }
+
+  const set = (id, val, txt) => { const e = $(id); if (e) { e.value = val; } const v = $(id + 'Val'); if (v) v.textContent = txt; };
+  set('#wpDim', WP.dim, WP.dim + '%');
+  set('#wpOpacity', Math.round(WP.opacity * 100), Math.round(WP.opacity * 100) + '%');
+  set('#wpBlur', WP.blur, WP.blur + ' px');
+  const fit = $('#wpFit'); if (fit) fit.value = WP.fit;
+}
+
+/** 上传一张壁纸图片 */
+async function uploadWallpaper(file) {
+  if (!file.type.startsWith('image/') && !/\.(jpe?g|png|webp|gif|bmp|avif)$/i.test(file.name)) {
+    toast('这不是图片', file.name, 'warn');
+    return false;
+  }
+  try {
+    const r = await apiUpload(`/api/wallpaper/upload?name=${encodeURIComponent(file.name)}`, file);
+    applyWallpaper(r);
+    toast('壁纸已更换', file.name, 'ok');
+    return true;
+  } catch (e) {
+    toast('壁纸设置失败', e.message, 'error', 6000);
+    return false;
+  }
+}
+
+async function loadWallpaper() {
+  try {
+    const r = await apiGet('/api/wallpaper');
+    applyWallpaper(r);
+    return r;
+  } catch { return null; }
+}
+
 
 /* ------------------------------------------------------------ 工具 */
 
@@ -2097,8 +2280,116 @@ async function refreshAll() {
 
 /* ------------------------------------------------------------ 事件绑定 */
 
+/* ------------------------------------------------------------ 外观绑定 */
+/**
+ * 主题导入 / 壁纸相关的全部交互。
+ * 滑块用「input 事件本地实时预览 + change 事件才落盘」，
+ * 拖动时不打服务端，松手才存一条配置。
+ */
+function bindAppearance() {
+  // ---- 主题导入
+  const tIn = $('#themeFileInput');
+  if ($('#btnThemeImport')) {
+    $('#btnThemeImport').onclick = () => tIn.click();
+    tIn.onchange = async () => {
+      const f = tIn.files && tIn.files[0];
+      tIn.value = '';
+      if (!f) return;
+      if (f.size > 512 * 1024) return toast('文件太大', '主题文件一般只有几 KB', 'warn');
+      const text = await f.text();
+      await importThemeFile(f.name, text);
+    };
+    $('#btnThemeOpen').onclick = async () => {
+      try { await apiPost('/api/themes/open', {}); }
+      catch (e) { toast('打开失败', e.message, 'error'); }
+    };
+    $('#btnThemeSample').onclick = async () => {
+      try {
+        const r = await apiGet('/api/themes/sample');
+        downloadText('示例主题-熔岩.json', r.json);
+        setTimeout(() => downloadText('示例主题-极光.html', r.html), 400);
+        toast('示例模板已保存', '改完拖回窗口就能用', 'ok', 5000);
+      } catch (e) { toast('获取失败', e.message, 'error'); }
+    };
+  }
+
+  // ---- 壁纸
+  const wIn = $('#wallFileInput');
+  if ($('#btnWallpick')) {
+    $('#btnWallpick').onclick = () => wIn.click();
+    wIn.onchange = async () => {
+      const f = wIn.files && wIn.files[0];
+      wIn.value = '';
+      if (f) await uploadWallpaper(f);
+    };
+    $('#btnWallClear').onclick = async () => {
+      if (!WP.has) return toast('当前没有壁纸', '', 'info');
+      openModal('<h2>移除壁纸？</h2><p class="modal-sub">图片文件会从 data/wallpapers 里删掉，恢复需要重新选一张。</p>', {
+        okText: '移除', onOk: async () => {
+          try { applyWallpaper(await apiPost('/api/wallpaper/clear', {})); toast('壁纸已移除', '', 'ok'); }
+          catch (e) { toast('移除失败', e.message, 'error'); }
+        },
+      });
+    };
+    $('#btnWallOpen').onclick = async () => {
+      try { await apiPost('/api/wallpaper/open', {}); }
+      catch (e) { toast('打开失败', e.message, 'error'); }
+    };
+
+    const live = () => {
+      const root = document.documentElement;
+      const dim = Number($('#wpDim').value);
+      const op = Number($('#wpOpacity').value) / 100;
+      const bl = Number($('#wpBlur').value);
+      $('#wpDimVal').textContent = dim + '%';
+      $('#wpOpacityVal').textContent = Math.round(op * 100) + '%';
+      $('#wpBlurVal').textContent = bl + ' px';
+      root.style.setProperty('--wp-dim', dim + '%');
+      root.style.setProperty('--wp-opacity', String(op));
+      root.style.setProperty('--wp-blur', bl + 'px');
+      $('#wpOverlay')?.style.setProperty('--wp-dim', dim + '%');
+      return { dim, opacity: op, blur: bl };
+    };
+    const commit = async () => {
+      const p = live();
+      Object.assign(WP, p);
+      try { localStorage.setItem('nova.wallpaper', JSON.stringify(WP)); } catch { }
+      try { await apiPost('/api/wallpaper/config', p); }
+      catch (e) { toast('保存失败', e.message, 'error'); }
+    };
+    ['#wpDim', '#wpOpacity', '#wpBlur'].forEach(sel => {
+      const e = $(sel);
+      if (!e) return;
+      e.oninput = live;
+      e.onchange = commit;
+    });
+    const fit = $('#wpFit');
+    if (fit) fit.onchange = async () => {
+      const v = fit.value;
+      document.documentElement.style.setProperty('--wp-size', v);
+      WP.fit = v;
+      try { applyWallpaper(await apiPost('/api/wallpaper/config', { fit: v })); }
+      catch (e) { toast('保存失败', e.message, 'error'); }
+    };
+  }
+}
+
+/** 让用户把一段文本存成文件（示例模板用） */
+function downloadText(filename, text) {
+  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
 function bindEvents() {
   $$('.nav-item').forEach(b => b.onclick = () => switchPage(b.dataset.page));
+  bindAppearance();
 
   // 全局接管 [data-url] —— 官网 / MC百科 / 源码 跳转
   document.addEventListener('click', (e) => {
@@ -2158,6 +2449,16 @@ async function handleDroppedFiles(files) {
   for (const f of files) {
     const n = f.name.toLowerCase();
     try {
+      // 外观类文件跟实例无关，先处理掉
+      if (/\.(json|html?|css)$/i.test(n)) {
+        if (f.size > 512 * 1024) { toast('文件太大', '主题文件一般只有几 KB：' + f.name, 'warn'); continue; }
+        await importThemeFile(f.name, await f.text());
+        continue;
+      }
+      if (/\.(jpe?g|png|webp|gif|bmp|avif)$/i.test(n)) {
+        await uploadWallpaper(f);
+        continue;
+      }
       if (n.endsWith('.jar')) {
         if (!inst) { toast('请先打开一个实例', '在「实例」页点开一个实例', 'warn'); continue; }
         await apiUpload(`/api/content/upload?instance=${encodeURIComponent(inst.id)}&kind=mod`, f);
@@ -2165,7 +2466,7 @@ async function handleDroppedFiles(files) {
         continue;
       }
       if (!/\.(zip|mcworld|mrpack)$/.test(n)) {
-        toast('不支持这种文件', f.name + '（支持 .jar / .zip / .mcworld / .mrpack）', 'warn', 5000);
+        toast('不支持这种文件', f.name + '（支持 .jar / .zip / .mcworld / .mrpack / 主题文件 / 图片）', 'warn', 5000);
         continue;
       }
       if (!inst) { toast('请先打开一个实例', '在「实例」页点开一个实例', 'warn'); continue; }
@@ -2192,7 +2493,7 @@ async function handleDroppedFiles(files) {
     if (!e.dataTransfer || Array.prototype.indexOf.call(e.dataTransfer.types, 'Files') < 0) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'copy';
-    showDropHint('松手即可导入到当前实例');
+    showDropHint('松手即可导入（模组 / 存档 / 整合包 / 主题 / 壁纸）');
   });
   document.addEventListener('dragenter', (e) => {
     if (e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types, 'Files') >= 0) _dragDepth++;
@@ -2470,7 +2771,8 @@ async function handleDroppedFiles(files) {
       <p class="modal-sub">${esc(file)}</p>
       <div class="notice ok">
         将覆盖：设置${plan.config ? '' : '（无）'}、
-        ${plan.instances.length} 个实例的配置、${plan.saves} 个存档文件。
+        ${plan.instances.length} 个实例的配置、${plan.saves} 个存档文件、
+        ${plan.themes} 个自定义主题${plan.wallpaper ? '、当前壁纸' : ''}。
         <br>当前状态会先自动存一份「恢复前存档」，点错了还能退回来。
       </div>`, {
       okText: '确认恢复', onOk: async () => {
@@ -2578,12 +2880,30 @@ function debounce(fn, ms) {
 
 async function boot() {
   bindEvents();
+
   // 主题先落定，避免首屏闪色。?theme=xxx 只用于临时预览，不写入本地设置
+  // 自定义主题/壁纸用本地缓存先垫上，再去服务端校正，这样不会先白一下再变
+  try { rebuildThemeList(JSON.parse(localStorage.getItem('nova.themes') || '[]')); } catch { }
+  try {
+    const wpCache = JSON.parse(localStorage.getItem('nova.wallpaper') || 'null');
+    if (wpCache) applyWallpaper(wpCache);
+  } catch { }
   const urlTheme = new URLSearchParams(location.search).get('theme');
   applyTheme(urlTheme || localStorage.getItem('nova.theme') || 'nova', false, !urlTheme);
+
   await refreshAll();
   await renderOptimize();
   renderSettings();
+
+  // 服务端的主题/壁纸才是准的（可能别的窗口改过）
+  await Promise.all([
+    loadThemes().then(r => {
+      const key = urlTheme || (S.config && S.config.theme) || localStorage.getItem('nova.theme') || 'nova';
+      if (r && document.documentElement.dataset.theme !== key) applyTheme(key, false, !urlTheme);
+    }),
+    loadWallpaper(),
+  ]);
+
 
   const saved = localStorage.getItem('nova.selected');
   if (saved && S.instances.find(i => i.id === saved)) S.selected = saved;

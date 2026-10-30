@@ -32,6 +32,11 @@ import { buildIndex, indexStatus, fuzzyLookup } from './search.mjs';
 import { cfSearch, cfProject, cfFiles, cfFileUrl, cfPing } from './curseforge.mjs';
 import { createBackup, listBackups, restoreBackup, deleteBackup, autoBackupIfDue } from './backup.mjs';
 import {
+  listCustomThemes, parseThemeFile, saveTheme, deleteTheme,
+  getWallpaper, setWallpaper, updateWallpaper, clearWallpaper, wallpaperPath, wallpaperPublic,
+  WALLPAPER_MIME, THEMES_DIR, WALLPAPER_DIR, THEME_SAMPLE_JSON, THEME_SAMPLE_HTML,
+} from './theme.mjs';
+import {
   readLevelDat, writeLevelDat, getData, summarizeLevel,
   setInt, setByte, setString, GAME_MODES, DIFFICULTIES,
 } from './nbt.mjs';
@@ -134,6 +139,18 @@ async function readJsonBody(req, limit = 8 * 1024 * 1024) {
   }
   if (!chunks.length) return {};
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { return {}; }
+}
+
+/** 收原始字节（壁纸这类要校验文件头的上传） */
+async function readAllBytes(req, limit = 24 * 1024 * 1024) {
+  const chunks = [];
+  let size = 0;
+  for await (const c of req) {
+    size += c.length;
+    if (size > limit) throw new Error(`文件过大（上限 ${Math.round(limit / 1048576)} MB）`);
+    chunks.push(c);
+  }
+  return Buffer.concat(chunks);
 }
 
 const MIME = {
@@ -410,7 +427,8 @@ async function handleApi(req, res, url) {
   const q = url.searchParams;
   // 这几个路由的 body 是原始二进制/文件流，绝不能被 JSON 预读吃掉。
   // 它们需要的参数一律走 query string。
-  const BINARY_ROUTES = ['/api/content/upload', '/api/pack/upload', '/api/saves/import', '/api/import/auto'];
+  const BINARY_ROUTES = ['/api/content/upload', '/api/pack/upload', '/api/saves/import', '/api/import/auto',
+    '/api/wallpaper/upload'];
   const isBinary = BINARY_ROUTES.indexOf(p) >= 0;
   const body = (!isBinary && req.method === 'POST')
     ? await readJsonBody(req).catch(() => ({}))
@@ -435,6 +453,83 @@ async function handleApi(req, res, url) {
     return ok(res, { config: await loadConfig() });
   }
   if (p === '/api/tasks') return ok(res, { tasks: listTasks() });
+
+  /* ---- 自定义主题 ---- */
+  if (p === '/api/themes') {
+    const cfg = await loadConfig();
+    return ok(res, { themes: await listCustomThemes(), active: cfg.theme || 'nova', dir: THEMES_DIR });
+  }
+  if (p === '/api/themes/import' && req.method === 'POST') {
+    // 前端把文件读成文本发过来（.json / .html / .css 都行）
+    const rec = parseThemeFile(body.filename, body.text);
+    // 同名视作「更新」，复用原 id，避免改一次就多出一张卡片
+    const same = (await listCustomThemes()).find(t => t.name === rec.name);
+    if (same) { rec.id = same.id; rec.createdAt = same.createdAt; }
+    await saveTheme(rec);
+    if (body.apply !== false) await saveConfig({ theme: rec.id });
+    return ok(res, { theme: rec, updated: !!same, applied: body.apply !== false });
+  }
+  if (p === '/api/themes/save' && req.method === 'POST') {
+    // 直接存一份（供「从内置主题派生并微调」用）
+    const name = String(body.name || '我的主题').slice(0, 24);
+    const same = (await listCustomThemes()).find(t => t.name === name);
+    const id = same ? same.id : 'custom-' + crypto.createHash('sha1')
+      .update(name + Date.now()).digest('hex').slice(0, 10);
+    const rec = {
+      id, name,
+      desc: String(body.desc || '手动创建').slice(0, 60),
+      vars: body.vars || {}, css: String(body.css || ''),
+      builtin: false, createdAt: same ? same.createdAt : Date.now(), source: '手动',
+    };
+    await saveTheme(rec);
+    if (body.apply !== false) await saveConfig({ theme: rec.id });
+    return ok(res, { theme: rec });
+  }
+  if (p === '/api/themes/delete' && req.method === 'POST') {
+    return ok(res, await deleteTheme(body.id));
+  }
+  if (p === '/api/themes/open' && req.method === 'POST') {
+    await fsp.mkdir(THEMES_DIR, { recursive: true });
+    spawn('explorer.exe', [THEMES_DIR], { detached: true, stdio: 'ignore' }).unref();
+    return ok(res, { dir: THEMES_DIR });
+  }
+  if (p === '/api/themes/sample' && req.method === 'GET') {
+    return ok(res, { json: THEME_SAMPLE_JSON, html: THEME_SAMPLE_HTML });
+  }
+
+  /* ---- 自定义壁纸 ---- */
+  if (p === '/api/wallpaper') {
+    return ok(res, await getWallpaper());
+  }
+  if (p === '/api/wallpaper/file') {
+    const wp = await getWallpaper();
+    const fp = wp.file ? await wallpaperPath(wp.file) : null;
+    if (!fp) return json(res, 404, { error: 'no wallpaper' });
+    const st = await fsp.stat(fp);
+    res.writeHead(200, {
+      'Content-Type': WALLPAPER_MIME[path.extname(fp).toLowerCase()] || 'application/octet-stream',
+      'Content-Length': st.size,
+      'Cache-Control': 'no-cache',
+    });
+    fs.createReadStream(fp).pipe(res);
+    return;
+  }
+  if (p === '/api/wallpaper/upload' && req.method === 'POST') {
+    const name = q.get('name') || req.headers['x-filename'] || 'wallpaper.png';
+    const buf = await readAllBytes(req, 24 * 1024 * 1024);
+    return ok(res, await setWallpaper(buf, decodeURIComponent(String(name))));
+  }
+  if (p === '/api/wallpaper/config' && req.method === 'POST') {
+    return ok(res, await updateWallpaper(body));
+  }
+  if (p === '/api/wallpaper/clear' && req.method === 'POST') {
+    return ok(res, await clearWallpaper());
+  }
+  if (p === '/api/wallpaper/open' && req.method === 'POST') {
+    await fsp.mkdir(WALLPAPER_DIR, { recursive: true });
+    spawn('explorer.exe', [WALLPAPER_DIR], { detached: true, stdio: 'ignore' }).unref();
+    return ok(res, { dir: WALLPAPER_DIR });
+  }
 
   /* ---- 数据快照（自动备份 / 恢复） ---- */
   if (p === '/api/backup/list') return ok(res, await listBackups());

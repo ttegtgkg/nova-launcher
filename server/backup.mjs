@@ -18,6 +18,7 @@ const BACKUP_DIR = path.join(DATA, 'backups');
 const META_FILE = path.join(BACKUP_DIR, 'index.json');
 const KEEP = 10;                       // 最多留 10 份，超出删最老
 const PER_FILE_CAP = 128 * 1024 * 1024; // 单个文件超 128MB 跳过（超大存档不硬扛）
+const WALL_BACKUP_CAP = 8 * 1024 * 1024; // 壁纸超过 8MB 就不进快照
 const AUTO_INTERVAL_MS = 24 * 3600 * 1000;
 
 let running = null;   // 正在跑的备份 Promise
@@ -99,6 +100,26 @@ async function doBackup({ reason = '手动' } = {}) {
     if (any) stats.instances++;
   }
 
+  // 自定义主题：几 KB，但丢了得重写，必须进快照
+  await collectDir(entries, path.join(DATA, 'themes'), 'themes', stats);
+
+  // 壁纸只存当前在用的那一张，且太大的跳过（图片能重新选，不值当撑爆快照）
+  const cfg = (await readJson(CONFIG_FILE, {})) || {};
+  const wallFile = cfg.wallpaper && cfg.wallpaper.file;
+  if (wallFile && /^wall-[a-f0-9]{8,20}\.\w+$/i.test(wallFile)) {
+    const fp = path.join(DATA, 'wallpapers', wallFile);
+    try {
+      const st = await fsp.stat(fp);
+      if (st.size <= WALL_BACKUP_CAP) {
+        entries.push({ name: 'wallpapers/' + wallFile, data: await fsp.readFile(fp) });
+        stats.files++;
+        stats.bytes += st.size;
+      } else {
+        stats.skipped++;
+      }
+    } catch { /* 图片不在就算了 */ }
+  }
+
   // 全是空的就别产出垃圾文件
   if (!stats.files) throw new Error('没有可备份的数据（实例和存档都是空的）');
 
@@ -167,7 +188,7 @@ export async function listBackups() {
 
 /* ------------------------------------------------------------ 恢复 */
 
-const RESTORE_ALLOW = /^(config\.json|downloads-history\.json|nova-backup\.txt|instances\/[^/]+\/(instance\.json|nova-sources\.json|options\.txt|servers\.dat)|instances\/[^/]+\/saves\/.+)$/;
+const RESTORE_ALLOW = /^(config\.json|downloads-history\.json|nova-backup\.txt|themes\/[\w.-]+\.json|wallpapers\/wall-[a-f0-9]{8,20}\.\w+|instances\/[^/]+\/(instance\.json|nova-sources\.json|options\.txt|servers\.dat)|instances\/[^/]+\/saves\/.+)$/;
 
 /** 恢复指定快照。恢复前先自动打一份当前状态，反悔有路。 */
 export async function restoreBackup(file, { confirm = false } = {}) {
@@ -182,6 +203,8 @@ export async function restoreBackup(file, { confirm = false } = {}) {
   const plan = {
     file, total: usable.length,
     config: usable.some(e => e.name === 'config.json'),
+    themes: usable.filter(e => /^themes\//.test(e.name)).length,
+    wallpaper: usable.some(e => /^wallpapers\//.test(e.name)),
     instances: [...new Set(usable.map(e => (e.name.match(/^instances\/([^/]+)\//) || [])[1]).filter(Boolean))],
     saves: usable.filter(e => /\/saves\//.test(e.name)).length,
   };

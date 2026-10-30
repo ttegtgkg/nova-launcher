@@ -18,6 +18,7 @@
 
 <!-- 背景光效 -->
 <div class="bg-effects">
+  <div class="wallpaper" id="wallpaperLayer"></div>
   <div class="orb orb-1"></div>
   <div class="orb orb-2"></div>
   <div class="orb orb-3"></div>
@@ -299,7 +300,66 @@
               <span class="badge" id="themeCurrent">Nova</span>
             </div>
             <div class="theme-grid" id="themeGrid"></div>
-            <p class="hint">主题保存在本机，下次打开自动应用。浅色主题适合白天使用。</p>
+            <div class="io-row">
+              <button class="btn btn-soft btn-sm" id="btnThemeImport">导入主题文件…</button>
+              <button class="btn btn-ghost btn-sm" id="btnThemeSample">下载示例模板</button>
+              <button class="btn btn-ghost btn-sm" id="btnThemeOpen">打开主题文件夹</button>
+            </div>
+            <input type="file" id="themeFileInput" accept=".json,.html,.htm,.css" hidden>
+            <p class="hint">
+              主题就是一个文件，两种写法都行：<br>
+              · <b>JSON</b> — <code>{"name":"我的主题","vars":{"--bg":"#111","--accent":"#f0f"}}</code><br>
+              · <b>HTML</b> — <code>&lt;meta name="nova-theme" content="我的主题"&gt;</code> 加一段
+              <code>&lt;style&gt;:root{--bg:#111}&lt;/style&gt;</code><br>
+              直接把文件<b>拖进窗口</b>也能导入。主题保存在 <code>data/themes/</code>，会跟着数据快照一起备份。
+            </p>
+          </div>
+
+          <div class="card pad wide">
+            <div class="card-head">
+              <h3>自定义壁纸</h3>
+              <span class="badge" id="wallpaperBadge">未设置</span>
+            </div>
+            <div class="wallpaper-preview empty" id="wallpaperPreview">
+              <div class="wp-overlay" id="wpOverlay" style="display:none"></div>
+              <div class="wp-tag" id="wpTag" style="display:none"></div>
+            </div>
+            <div class="io-row" style="margin-top:0">
+              <button class="btn btn-primary btn-sm" id="btnWallpick">选择图片…</button>
+              <button class="btn btn-ghost btn-sm" id="btnWallClear">移除壁纸</button>
+              <button class="btn btn-ghost btn-sm" id="btnWallOpen">打开壁纸文件夹</button>
+            </div>
+            <input type="file" id="wallFileInput" accept="image/*" hidden>
+
+            <div style="margin-top:16px">
+              <div class="slider-row">
+                <label>暗度</label>
+                <input type="range" id="wpDim" min="0" max="92" step="1" value="55">
+                <span class="sl-val" id="wpDimVal">55%</span>
+              </div>
+              <div class="slider-row">
+                <label>不透明度</label>
+                <input type="range" id="wpOpacity" min="10" max="100" step="1" value="100">
+                <span class="sl-val" id="wpOpacityVal">100%</span>
+              </div>
+              <div class="slider-row">
+                <label>模糊</label>
+                <input type="range" id="wpBlur" min="0" max="24" step="1" value="0">
+                <span class="sl-val" id="wpBlurVal">0 px</span>
+              </div>
+              <div class="field" style="margin-bottom:0">
+                <label>填充方式</label>
+                <select id="wpFit">
+                  <option value="cover">铺满（可能裁切）</option>
+                  <option value="contain">完整显示（可能留边）</option>
+                  <option value="auto">原始大小</option>
+                </select>
+              </div>
+            </div>
+            <p class="hint">
+              壁纸图片复制到 <code>data/wallpapers/</code>，上限 24 MB，支持 jpg / png / webp / gif。
+              把图片直接<b>拖进窗口</b>也能换。暗度是压在图片上的一层主题底色，调高了字更清楚。
+            </p>
           </div>
 
           <div class="card pad">
