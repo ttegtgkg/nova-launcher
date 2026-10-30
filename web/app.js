@@ -1138,7 +1138,13 @@ function contentItemHtml(it, kind) {
 
 /* ------------------------------------------------------------ 内容下载页 */
 
-const STORE = { kind: 'mod', hits: [], queryInfo: null, total: 0, type: 'search' };
+// 搜索结果也是分页的：Modrinth 一次最多给 100 条，但 total 可能是几千，
+// 只显示头一页等于把剩下的都藏了。每页条数与实例内列表保持一致。
+const STORE = {
+  kind: 'mod', hits: [], queryInfo: null, total: 0, type: 'search',
+  source: 'modrinth', relaxed: null,
+  page: 1, limit: 30, req: null,
+};
 
 function storeInstanceId() {
   const sel = $('#storeInstance');
@@ -1165,7 +1171,9 @@ async function doStoreSearch() {
   box.innerHTML = '<div class="loading-line">搜索中…</div>';
 
   if (source === 'curseforge') {
-    return doCfSearch(kind);
+    STORE.page = 1;
+    STORE.req = { cf: true, kind, q: ($('#storeQuery').value || '').trim(), limit: STORE.limit };
+    return doCfSearch(kind, 1);
   }
 
   const q = ($('#storeQuery').value || '').trim();
@@ -1174,31 +1182,84 @@ async function doStoreSearch() {
   const kindArg = kind === 'modpack' ? 'modpack' : kind;
   const useLoader = (kind === 'mod' || kind === 'modpack') ? (inst?.loader || '') : '';
 
-  const search = (withFilter) => apiGet(`/api/mr/search?query=${encodeURIComponent(q)}&kind=${kindArg}`
-    + (withFilter ? `&mcVersion=${encodeURIComponent(inst?.version || '')}&loader=${encodeURIComponent(useLoader)}` : '')
-    + `&limit=24`);
+  // 记下这次的检索条件：翻页时必须原样重放，不能再去读输入框
+  // （用户可能翻页前顺手改了关键词却没回车）
+  STORE.req = {
+    cf: false, q, kindArg, source,
+    version: inst?.version || '', loader: useLoader,
+    withFilter: true, instId, limit: STORE.limit,
+  };
+  STORE.page = 1;
+  return runStoreSearch(1);
+}
+
+/**
+ * 执行一次搜索请求。
+ * 第 1 页带版本/加载器过滤，若过滤后一条都没有，就放宽到全部版本并记下状态，
+ * 后续翻页沿用它 —— 否则第 2 页会突然又变回过滤条件，结果对不上。
+ */
+async function runStoreSearch(page) {
+  const box = $('#storeResults');
+  const req = STORE.req;
+  if (!req || req.cf) return;
+  const offset = (page - 1) * req.limit;
+
+  const search = (withFilter) => apiGet(`/api/mr/search?query=${encodeURIComponent(req.q)}&kind=${req.kindArg}`
+    + `&offset=${offset}&limit=${req.limit}`
+    + (withFilter ? `&mcVersion=${encodeURIComponent(req.version)}&loader=${encodeURIComponent(req.loader)}` : ''));
 
   try {
-    let r = await search(true);
-    // 按当前实例过滤后没结果 → 自动放宽到全部版本，并告诉用户原因
-    if ((r.hits || []).length === 0 && inst) {
-      const loose = await search(false).catch(() => null);
-      if (loose && (loose.hits || []).length) {
-        r = loose;
-        STORE.relaxed = `没有适配 ${inst.version}${useLoader ? ' / ' + loaderName(useLoader) : ''} 的结果，已显示全部版本`;
+    let r = await search(req.withFilter);
+    if (page === 1) {
+      if ((r.hits || []).length === 0 && req.withFilter && (req.version || req.loader)) {
+        const loose = await search(false).catch(() => null);
+        if (loose && (loose.hits || []).length) {
+          r = loose;
+          req.withFilter = false;
+          STORE.relaxed = `没有适配 ${req.version}${req.loader ? ' / ' + loaderName(req.loader) : ''} 的结果，已显示全部版本`;
+        } else {
+          STORE.relaxed = null;
+        }
       } else {
         STORE.relaxed = null;
       }
-    } else {
-      STORE.relaxed = null;
     }
     STORE.hits = r.hits || [];
     STORE.total = r.total || 0;
     STORE.queryInfo = r.queryInfo || null;
+    STORE.page = page;
     renderStoreResults();
   } catch (e) {
-    box.innerHTML = `<div class="loading-line">搜索失败：${esc(e.message)}</div>`;
+    // 深翻页失败（off 太深 / 网络抖动）时不要把已显示的列表清空
+    if (page === 1) {
+      box.innerHTML = `<div class="loading-line">搜索失败：${esc(e.message)}</div>`;
+    } else {
+      toast('这一页没取到', '页码太深或网络不稳，可回上一页再试：' + e.message, 'warn', 6000);
+    }
   }
+}
+
+/** 搜索结果的翻页 */
+async function gotoStorePage(n) {
+  const box = $('#storeResults');
+  if (box) box.classList.add('is-loading');
+  if (STORE.req && STORE.req.cf) await doCfSearch(STORE.req.kind, n);
+  else await runStoreSearch(n);
+  if (box) box.classList.remove('is-loading');
+  const head = box && box.querySelector('.section-head');
+  scrollPagesTo(head || box);
+}
+
+/** 搜索结果的「第一页 / 上一页 / 页码 / 下一页 / 最后一页」 */
+function storePagerHtml() {
+  const total = STORE.total || 0;
+  if (total <= STORE.limit) return '';
+  return pagerHtml(total, STORE.page, STORE.limit);
+}
+
+function bindStorePager(box) {
+  if (!box) return;
+  bindPager(box, STORE.page, STORE.total, STORE.limit, (n) => gotoStorePage(n));
 }
 
 function renderStoreResults() {
@@ -1248,7 +1309,8 @@ function renderStoreResults() {
             </div>
           </div>
         </div>
-      </div>`).join('')}</div>`;
+      </div>`).join('')}</div>` + storePagerHtml();
+    bindStorePager(box);
     return;
   }
 
@@ -1271,14 +1333,17 @@ function renderStoreResults() {
         <button class="btn btn-soft btn-sm" data-detail="${esc(h.id || h.slug)}">详情</button>
       </div>
     </div>`;
-  }).join('')}</div>`;
+  }).join('')}</div>` + storePagerHtml();
 
+  bindStorePager(box);
+
+  // 只绑一次。之前这里写了两遍 forEach，第二遍把第一遍的 handler 覆盖掉，
+  // 导致 CurseForge 来源的条目永远走 openCfInstall 那条分支。
   $$('[data-store-install]', box).forEach(b => b.onclick = () => {
     const h = STORE.hits.find(x => x.id === b.dataset.storeInstall);
     if (h && h.sourceKind === 'curseforge') return openCfInstall(h);
     storeInstall(b.dataset.storeInstall);
   });
-  $$('[data-store-install]', box).forEach(b => b.onclick = () => storeInstall(b.dataset.storeInstall));
 }
 
 /** 内容下载页的安装：直接装最新适配版本到所选实例 */
@@ -1356,18 +1421,23 @@ function bindPager(root, page, total, pageSize, go) {
 }
 
 /**
- * 翻页后让列表回到视野顶部。
- * 真正的滚动容器是 .pages，所以不能用 scrollIntoView —— 那会把实例标题
- * 和标签栏一起滚出去，翻完页就不知道自己在看什么了。
- * 因此以标签栏为锚点，保证「标签栏 + 工具条 + 第一行卡片」都在画面里。
+ * 让某个元素回到滚动容器（.pages）的视野顶部。
+ * 不用 scrollIntoView：那会把它连同上面的上下文一起顶出画面。
  */
-function scrollTabToTop(el) {
-  const sc = el.closest('.pages') || document.querySelector('.pages');
-  if (!sc) return;
-  const anchor = document.querySelector('#instTabs') || el;
-  const delta = anchor.getBoundingClientRect().top - sc.getBoundingClientRect().top;
+function scrollPagesTo(anchorEl) {
+  const sc = document.querySelector('.pages');
+  if (!sc || !anchorEl) return;
+  const delta = anchorEl.getBoundingClientRect().top - sc.getBoundingClientRect().top;
   if (delta > -10) return;                 // 已经在上方，不用动
   sc.scrollBy({ top: delta - 10, behavior: 'smooth' });
+}
+
+/**
+ * 翻页后让列表回到视野顶部。
+ * 以标签栏为锚点，保证「标签栏 + 工具条 + 第一行卡片」都在画面里。
+ */
+function scrollTabToTop(el) {
+  scrollPagesTo(document.querySelector('#instTabs') || el);
 }
 
 const INST_TABS = [
@@ -3162,20 +3232,25 @@ function openChangeLoader(inst) {
 }
 /* ------------------------------------------------------------ CurseForge 搜索 */
 
-async function doCfSearch(kind) {
+async function doCfSearch(kind, page = 1) {
   const box = $('#storeResults');
-  const q = ($('#storeQuery').value || '').trim();
+  const q = (STORE.req && STORE.req.q) ?? ($('#storeQuery').value || '').trim();
   const inst = S.instances.find(i => i.id === storeInstanceId());
+  const limit = STORE.limit;
+  const offset = (page - 1) * limit;
   try {
     const r = await apiGet(`/api/cf/search?query=${encodeURIComponent(q)}&kind=${kind}`
+      + `&offset=${offset}&limit=${limit}`
       + `&mcVersion=${encodeURIComponent(inst?.version || '')}`
-      + `&loader=${encodeURIComponent(kind === 'mod' ? (inst?.loader || '') : '')}&limit=24`);
+      + `&loader=${encodeURIComponent(kind === 'mod' ? (inst?.loader || '') : '')}`);
     STORE.hits = (r.hits || []).map(h => ({ ...h, sourceKind: 'curseforge' }));
     STORE.total = r.total || 0;
     STORE.queryInfo = null;
+    STORE.page = page;
     renderStoreResults();
   } catch (e) {
-    box.innerHTML = `<div class="loading-line">CurseForge 搜索失败：${esc(e.message)}</div>`;
+    if (page === 1) box.innerHTML = `<div class="loading-line">CurseForge 搜索失败：${esc(e.message)}</div>`;
+    else toast('这一页没取到', e.message, 'warn', 6000);
   }
 }
 

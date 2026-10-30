@@ -1522,3 +1522,6 @@ html[data-wallpaper="off"] .wallpaper { display: none; }
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 .pg-btn:disabled { opacity: .36; cursor: not-allowed; }
+
+/* 翻页请求期间轻微压暗，避免误以为点了没反应 */
+#storeResults.is-loading { opacity: .5; transition: opacity .15s ease; pointer-events: none; }
