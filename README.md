@@ -1,5 +1,8 @@
 # Nova Launcher · 新星启动器
 
+> 仓库地址：https://github.com/ttegtgkg/nova-launcher
+> 项目主页：https://ttegtgkg.github.io/nova-launcher/
+
 一个**零依赖、轻量、开箱即用**的 Minecraft 启动器。为低配电脑和国内网络环境优化。
 
 > 纯 Node.js 原生实现：没有任何 npm 依赖、没有 Electron、没有打包器。
