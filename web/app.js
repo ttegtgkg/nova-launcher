@@ -1942,6 +1942,7 @@ function renderSettings() {
   $('#jvmPresetDesc').textContent = JVM_PRESETS[presetSel.value]?.desc || '';
 
   $('#setSource').value = cfg.source || 'auto';
+  if ($('#setAutoBackup')) $('#setAutoBackup').checked = cfg.autoBackup !== false;
   if ($('#setCfKey') && cfg.curseforgeApiKey) $('#setCfKey').value = cfg.curseforgeApiKey;
   $('#setConcurrency').value = cfg.downloadConcurrency || 12;
   $('#setExtraJvm').value = currentInstance()?.extraJvmArgs || cfg.extraJvmArgs || '';
@@ -2369,8 +2370,7 @@ async function handleDroppedFiles(files) {
   $('#setConcurrency').onchange = e => saveCfg({ downloadConcurrency: Number(e.target.value) || 12 });
 
   // 启动时自动内存优化
-  $('#setAutoOptimize').onchange = async e => {
-    const v = e.target.checked;
+  $('#setAutoOptimize').onchange = async e => {    const v = e.target.checked;
     try {
       if (S.selected) await apiPost('/api/instances/update', { id: S.selected, autoOptimize: v });
       else await apiPost('/api/config', { autoOptimize: v });
@@ -2424,6 +2424,90 @@ async function handleDroppedFiles(files) {
     try { await apiPost('/api/kill'); toast('已请求结束游戏', '', 'warn'); }
     catch (e) { toast('操作失败', e.message, 'error'); }
   };
+
+  // 数据快照
+  const fmtSize = (n) => n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : (n / 1024).toFixed(0) + ' KB';
+  async function renderBackups() {
+    const box = $('#backupList');
+    if (!box) return;
+    try {
+      const r = await apiGet('/api/backup/list');
+      if (!r.items.length) {
+        box.innerHTML = '<p class="hint">还没有快照。点「立即备份」建一份，之后每天会自动存。</p>';
+        return;
+      }
+      box.innerHTML = r.items.map(it => `
+        <div class="backup-row">
+          <div class="backup-main">
+            <b>${esc(it.file.replace(/^snapshot-|\.zip$/g, ''))}</b>
+            <span class="backup-meta">${fmtSize(it.size)} · ${it.instances ?? '?'} 个实例 · ${it.files ?? '?'} 个文件 · ${esc(it.reason)}</span>
+          </div>
+          <div class="backup-acts">
+            <button class="btn btn-soft btn-xs" data-restore="${esc(it.file)}">恢复</button>
+            <button class="btn btn-ghost btn-xs" data-del="${esc(it.file)}">删除</button>
+          </div>
+        </div>`).join('');
+      $$('[data-restore]', box).forEach(b => b.onclick = () => doRestore(b.dataset.restore));
+      $$('[data-del]', box).forEach(b => b.onclick = () => {
+        openModal(`<h2>删除这份快照？</h2><p class="modal-sub">${esc(b.dataset.del)}<br>删除后不可恢复。</p>`, {
+          okText: '删除', onOk: async () => {
+            await apiPost('/api/backup/delete', { file: b.dataset.del });
+            toast('已删除', '', 'ok');
+            renderBackups();
+          },
+        });
+      });
+    } catch (e) {
+      box.innerHTML = `<p class="hint">读取失败：${esc(e.message)}</p>`;
+    }
+  }
+  async function doRestore(file) {
+    let plan;
+    try { plan = (await apiPost('/api/backup/restore', { file })).plan; }
+    catch (e) { return toast('无法读取快照', e.message, 'error'); }
+    openModal(`
+      <h2>恢复这份快照？</h2>
+      <p class="modal-sub">${esc(file)}</p>
+      <div class="notice ok">
+        将覆盖：设置${plan.config ? '' : '（无）'}、
+        ${plan.instances.length} 个实例的配置、${plan.saves} 个存档文件。
+        <br>当前状态会先自动存一份「恢复前存档」，点错了还能退回来。
+      </div>`, {
+      okText: '确认恢复', onOk: async () => {
+        try {
+          const r = await apiPost('/api/backup/restore', { file, confirm: true });
+          toast('恢复完成', `${r.restored} 个文件已还原，重启启动器后设置生效` +
+            (r.safety ? `；恢复前状态存于 ${r.safety}` : ''), 'ok', 8000);
+          renderBackups();
+        } catch (e) { toast('恢复失败', e.message, 'error'); }
+      },
+    });
+  }
+  if ($('#btnBackupNow')) {
+    $('#btnBackupNow').onclick = async () => {
+      const b = $('#btnBackupNow');
+      b.disabled = true; b.textContent = '备份中…';
+      try {
+        const r = await apiPost('/api/backup/now', { reason: '手动' });
+        toast('备份完成', `${r.item.file} · ${fmtSize(r.item.size)}`, 'ok');
+        renderBackups();
+      } catch (e) { toast('备份失败', e.message, 'error'); }
+      finally { b.disabled = false; b.textContent = '立即备份'; }
+    };
+    $('#btnBackupOpen').onclick = async () => {
+      try { await apiPost('/api/backup/open', {}); }
+      catch (e) { toast('打开失败', e.message, 'error'); }
+    };
+    $('#setAutoBackup').onchange = async e => {
+      const v = e.target.checked;
+      try {
+        await apiPost('/api/config', { autoBackup: v });
+        toast(v ? '已开启每日自动备份' : '已关闭自动备份',
+          v ? '每天第一次启动时自动存一份' : '仍可随时点「立即备份」', 'ok');
+      } catch (err) { toast('保存失败', err.message, 'error'); }
+    };
+    renderBackups();
+  }
 
   // 工具与维护
   $$('[data-open]').forEach(b => b.onclick = async () => {

@@ -82,6 +82,7 @@ export const DEFAULTS = {
   jvmPreset: 'aikar',
   autoOptimize: true,        // 启动时自动内存优化
   autoInstallJava: true,     // 缺少合适的 Java 时自动下载安装
+  autoBackup: true,          // 每天自动打一份数据快照
   curseforgeApiKey: '',      // CurseForge 官方 API Key（可选，申请后填这里）
   closeLauncherOnPlay: false,
   showSnapshots: false,

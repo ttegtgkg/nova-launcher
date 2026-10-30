@@ -417,6 +417,24 @@
           </div>
 
           <div class="card pad">
+            <div class="card-head"><h3>数据快照（自动备份）</h3></div>
+            <p class="hint">
+              每天自动把<b>设置、实例配置、模组来源、存档和键位</b>打包存一份，放在数据目录的
+              <code>backups</code> 里，最多留 10 份，超出自动删最旧的。<br>
+              游戏本体、依赖库、模组文件不备份 —— 那些能重新下回来，占空间不划算。
+            </p>
+            <label class="switch-line">
+              <input type="checkbox" id="setAutoBackup" checked>
+              <span>每天自动备份一次（存档丢了能救回来）</span>
+            </label>
+            <div class="row-gap">
+              <button class="btn btn-primary btn-sm" id="btnBackupNow">立即备份</button>
+              <button class="btn btn-soft btn-sm" id="btnBackupOpen">打开备份文件夹</button>
+            </div>
+            <div id="backupList" class="backup-list"><p class="hint">读取中…</p></div>
+          </div>
+
+          <div class="card pad">
             <div class="card-head"><h3>工具与维护</h3></div>
             <div class="row-gap">
               <button class="btn btn-soft btn-sm" data-open="data">数据目录</button>

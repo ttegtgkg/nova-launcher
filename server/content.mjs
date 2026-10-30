@@ -125,6 +125,38 @@ const metaCache = new Map(); // file -> { key, meta }
 
 function isDisabled(name) { return /\.disabled$/i.test(name); }
 
+/**
+ * 清洗版本号。
+ * Forge/NeoForge 的 mods.toml 里常见 `version="${file.jarVersion}"` 这类占位符，
+ * 真正替换发生在游戏运行时；直接显示会变成 `v${file.jarVersion}`，很难看。
+ */
+function cleanVersion(v) {
+  if (v === null || v === undefined) return null;
+  const s = String(v).trim();
+  if (!s) return null;
+  if (s.includes('${')) return null;      // 占位符，交给文件名兜底
+  if (/^[${}]+$/.test(s)) return null;
+  return s;
+}
+
+/**
+ * 从 jar 文件名猜一个体面的显示名。
+ * 拿到元数据的模组不会走这里；只有没写 name 的库 / 影子 mod 才会。
+ * 例：`mezz_config-26.1.2-neoforge-0.6.9-standalone` → `Mezz Config`
+ */
+function prettyName(base) {
+  let s = String(base);
+  // 砍掉第一个像版本号的尾巴（-1.2 / -26.1.2 / -mc1.20.1 / -v1.2.3）
+  const cut = s.search(/[-_+](?:mc|v)?\d+\.\d/i);
+  if (cut > 0) s = s.slice(0, cut);
+  // 去掉纯加载器后缀
+  s = s.replace(/[-_+](fabric|forge|neoforge|quilt|common)$/i, '');
+  if (!s || s.length < 2) return String(base);
+  // 下划线/连字符转空格，首字母大写
+  s = s.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return s.replace(/\b[a-z]/g, (c) => c.toUpperCase());
+}
+
 /* ------------------------------------------------ 内容来源（用于链接跳转） */
 
 const SOURCES_FILE = 'nova-sources.json';
@@ -176,7 +208,7 @@ async function readJarMeta(file) {
       meta.loader = fmj ? 'fabric' : 'quilt';
       meta.id = q.id || null;
       meta.name = q.name || meta.name;
-      meta.version = q.version || null;
+      meta.version = cleanVersion(q.version);
       meta.description = typeof q.description === 'string' ? q.description : (q.description?.en_us || '');
       const au = q.authors;
       meta.authors = Array.isArray(au) ? au.map(a => typeof a === 'string' ? a : a.name).filter(Boolean)
@@ -188,7 +220,7 @@ async function readJarMeta(file) {
       const grab = (re) => { const m = re.exec(t); return m ? m[1].trim() : null; };
       meta.id = grab(/^\s*modId\s*=\s*"([^"]*)"/m) || grab(/^\s*modId\s*=\s*'([^']*)'/m) || null;
       meta.name = grab(/^\s*displayName\s*=\s*"([^"]*)"/m) || grab(/^\s*displayName\s*=\s*'([^']*)'/m) || meta.name;
-      meta.version = grab(/^\s*version\s*=\s*"([^"]*)"/m) || grab(/^\s*version\s*=\s*'([^']*)'/m);
+      meta.version = cleanVersion(grab(/^\s*version\s*=\s*"([^"]*)"/m) || grab(/^\s*version\s*=\s*'([^']*)'/m));
       meta.authors = [grab(/^\s*authors\s*=\s*"([^"]*)"/m)].filter(Boolean);
       meta.description = grab(/^\s*description\s*=\s*"([^"]*)"/m) || '';
     } else if (mcmod) {
@@ -197,7 +229,7 @@ async function readJarMeta(file) {
       if (j) {
         meta.id = j.modid || null;
         meta.name = j.name || meta.name;
-        meta.version = j.version || null;
+        meta.version = cleanVersion(j.version);
         meta.authors = j.authorList || (j.author ? [j.author] : []);
         meta.description = j.description || '';
         meta.loader = 'forge';
@@ -211,6 +243,15 @@ async function readJarMeta(file) {
       } catch { }
     }
   } catch { /* 损坏或非 zip，用文件名 */ }
+
+  // 元数据里没拿到版本时，从文件名里猜（xxx-1.2.3.jar 这种）
+  const rawBase = path.basename(file).replace(/\.(jar|zip)(\.disabled)?$/i, '');
+  if (!meta.version) {
+    const m = rawBase.match(/(?:^|[-_+])(\d+\.\d+(?:\.\d+)?[a-z0-9.+-]*)$/i);
+    if (m) meta.version = cleanVersion(m[1]);
+  }
+  // 名字还是原始文件名 = jar 里没有可读元数据，用文件名润色一下
+  if (meta.name === rawBase) meta.name = prettyName(rawBase);
 
   metaCache.set(file, { key, meta });
   return meta;

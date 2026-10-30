@@ -30,6 +30,7 @@ import { translateQuery, cnName, buildLinks, mcmodSearchUrl, MOD_CN, CFPA_MODS }
 import { translateText } from './translate.mjs';
 import { buildIndex, indexStatus, fuzzyLookup } from './search.mjs';
 import { cfSearch, cfProject, cfFiles, cfFileUrl, cfPing } from './curseforge.mjs';
+import { createBackup, listBackups, restoreBackup, deleteBackup, autoBackupIfDue } from './backup.mjs';
 import {
   readLevelDat, writeLevelDat, getData, summarizeLevel,
   setInt, setByte, setString, GAME_MODES, DIFFICULTIES,
@@ -434,6 +435,26 @@ async function handleApi(req, res, url) {
     return ok(res, { config: await loadConfig() });
   }
   if (p === '/api/tasks') return ok(res, { tasks: listTasks() });
+
+  /* ---- 数据快照（自动备份 / 恢复） ---- */
+  if (p === '/api/backup/list') return ok(res, await listBackups());
+  if (p === '/api/backup/now' && req.method === 'POST') {
+    const item = await createBackup({ reason: body.reason || '手动' });
+    return ok(res, { item });
+  }
+  if (p === '/api/backup/restore' && req.method === 'POST') {
+    const r = await restoreBackup(body.file, { confirm: !!body.confirm });
+    return ok(res, r);
+  }
+  if (p === '/api/backup/delete' && req.method === 'POST') {
+    return ok(res, await deleteBackup(body.file));
+  }
+  if (p === '/api/backup/open' && req.method === 'POST') {
+    const { dir } = await listBackups();
+    await fsp.mkdir(dir, { recursive: true });
+    spawn('explorer.exe', [dir], { detached: true, stdio: 'ignore' }).unref();
+    return ok(res, { dir });
+  }
 
   /* ---- 下载管理中心 ---- */
   if (p === '/api/tasks/cancel' && req.method === 'POST') {
@@ -1758,6 +1779,8 @@ async function main() {
     console.log(`  数据目录: ${DATA}`);
     console.log(`  物理内存: ${totalMemoryMb()} MB | CPU 核心: ${os.cpus().length}`);
     console.log('─'.repeat(52) + '\n');
+    // 每日自动数据快照：后台悄悄跑，失败不影响使用
+    setTimeout(() => { autoBackupIfDue().catch(() => { }); }, 6000);
     if (process.env.NOVA_NO_OPEN !== '1') {
       setTimeout(() => {
         spawn('cmd', ['/c', 'start', '', `http://${HOST}:${PORT}`], { detached: true, stdio: 'ignore', windowsHide: true })
