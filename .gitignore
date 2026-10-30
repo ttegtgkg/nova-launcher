@@ -1,0 +1,39 @@
+# ===== 运行时数据（绝对不能提交）=====
+# 游戏本体、依赖库、资源文件、实例、模组、存档、截图、日志
+data/
+
+# ===== 构建中间产物 =====
+build/node-win-x64.zip
+build/node/
+build/payload.zip
+build/stage/
+build/webview2/
+build/shelltest/
+build/*.log
+
+# ===== 二进制产物（发布时用 Release 附件，不进仓库）=====
+build/NovaLauncher-Setup-*.exe
+NovaLauncher.exe
+*.dll
+*.pdb
+
+# 但源码和图标要保留
+!build/Shell.cs
+!build/Installer.cs
+!build/build.ps1
+!build/nova.ico
+
+# ===== 系统 / 编辑器 =====
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# ===== 常见临时文件 =====
+*.tmp
+*.log
+_*.mjs
+_*.js
+~$*

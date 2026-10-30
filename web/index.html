@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nova Launcher · 新星启动器</title>
+<script>
+  // 在样式生效前应用主题，避免打开时闪一下默认配色
+  try {
+    var q = new URLSearchParams(location.search).get('theme');
+    document.documentElement.dataset.theme = q || localStorage.getItem('nova.theme') || 'nova';
+  } catch (e) {}
+</script>
+<link rel="stylesheet" href="/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%238b5cf6'/><stop offset='1' stop-color='%2322d3ee'/></linearGradient></defs><rect width='100' height='100' rx='24' fill='url(%23g)'/><path d='M28 72V28l22 26 22-26v44' stroke='white' stroke-width='9' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+</head>
+<body>
+
+<!-- 背景光效 -->
+<div class="bg-effects">
+  <div class="orb orb-1"></div>
+  <div class="orb orb-2"></div>
+  <div class="orb orb-3"></div>
+  <div class="grid-overlay"></div>
+</div>
+
+<div class="app">
+
+  <!-- ================= 侧边栏 ================= -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">
+        <svg viewBox="0 0 100 100" width="26" height="26">
+          <defs><linearGradient id="bg1" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#c4b5fd"/><stop offset="1" stop-color="#67e8f9"/>
+          </linearGradient></defs>
+          <path d="M22 78V22l28 32 28-32v56" stroke="url(#bg1)" stroke-width="11" fill="none"
+                stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+      <div class="brand-text">
+        <div class="brand-name">Nova</div>
+        <div class="brand-sub">新星启动器</div>
+      </div>
+    </div>
+
+    <nav class="nav" id="nav">
+      <button class="nav-item active" data-page="home">
+        <svg viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>
+        <span>启动</span>
+      </button>
+      <button class="nav-item" data-page="download">
+        <svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+        <span>下载游戏</span>
+      </button>
+      <button class="nav-item" data-page="store">
+        <svg viewBox="0 0 24 24"><path d="M3 9l2-5h14l2 5M4 9h16v10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z"/><path d="M9 13h6"/></svg>
+        <span>内容下载</span>
+      </button>
+      <button class="nav-item" data-page="downloads">
+        <svg viewBox="0 0 24 24"><path d="M4 6h10M4 12h16M4 18h7"/><circle cx="18" cy="6" r="2"/><circle cx="14" cy="18" r="2"/></svg>
+        <span>下载管理</span>
+        <span class="nav-badge hidden" id="navDlBadge"></span>
+      </button>
+      <button class="nav-item" data-page="instances">
+        <svg viewBox="0 0 24 24"><path d="M4 6h6v6H4zM14 6h6v6h-6zM4 16h6v4H4zM14 16h6v4h-6z"/></svg>
+        <span>实例</span>
+      </button>
+      <button class="nav-item" data-page="settings">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/></svg>
+        <span>设置</span>
+      </button>
+    </nav>
+
+    <div class="sidebar-bottom">
+      <div class="mem-gauge" id="memGauge">
+        <div class="mem-row">
+          <span class="mem-label">可用内存</span>
+          <span class="mem-val" id="memVal">—</span>
+        </div>
+        <div class="mem-track"><div class="mem-fill" id="memFill" style="width:0%"></div></div>
+      </div>
+      <div class="running-badge hidden" id="runningBadge">
+        <span class="dot"></span><span id="runningText">游戏运行中</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ================= 主区域 ================= -->
+  <main class="main">
+    <header class="topbar">
+      <div>
+        <h1 class="page-title" id="pageTitle">启动</h1>
+        <p class="page-sub" id="pageSub">选择一个实例开始游戏</p>
+      </div>
+      <div class="topbar-actions">
+        <div class="pill" id="pillJava"><span class="pill-dot"></span><span>Java 检测中</span></div>
+        <div class="pill" id="pillRam"><span class="pill-dot"></span><span>—</span></div>
+        <button class="icon-btn" id="btnRefresh" title="刷新">
+          <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4M21 3v6h-6"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <div class="pages" id="pages">
+
+      <!-- ---------- 主页 ---------- -->
+      <section class="page active" id="page-home">
+        <div id="firstRun" class="first-run hidden"></div>
+
+        <div class="home-grid">
+          <div class="hero card" id="hero">
+            <div class="hero-glow"></div>
+            <div class="hero-body">
+              <div class="hero-label">当前实例</div>
+              <div class="hero-name" id="heroName">还没有实例</div>
+              <div class="hero-meta" id="heroMeta">去「下载游戏」装一个版本吧</div>
+              <div class="hero-actions">
+                <button class="btn btn-primary btn-lg" id="btnHeroPlay">
+                  <svg viewBox="0 0 24 24" class="btn-ico"><path d="M7 4l13 8-13 8z"/></svg>
+                  启动游戏
+                </button>
+                <button class="btn btn-ghost" id="btnHeroFolder">打开目录</button>
+              </div>
+            </div>
+            <div class="hero-stats" id="heroStats"></div>
+          </div>
+
+          <div class="card optimize-card" id="optimizeCard">
+            <div class="card-head">
+              <h3>内存优化</h3>
+              <button class="link-btn" id="btnApplyRec">一键推荐</button>
+            </div>
+            <div id="optimizeBody" class="optimize-body"></div>
+          </div>
+        </div>
+
+        <div class="section-head">
+          <h2>我的实例</h2>
+          <button class="btn btn-soft btn-sm" id="btnNewInstance">+ 新建实例</button>
+        </div>
+        <div class="instance-grid" id="instanceGrid"></div>
+
+        <div class="section-head" id="logHead" style="display:none">
+          <h2>游戏日志</h2>
+          <div class="row-gap">
+            <button class="btn btn-soft btn-sm" id="btnClearLog">清空</button>
+            <button class="btn btn-soft btn-sm" id="btnKillGame" style="display:none">强制结束</button>
+          </div>
+        </div>
+        <pre class="log-box" id="logBox" style="display:none"></pre>
+      </section>
+
+      <!-- ---------- 下载 ---------- -->
+      <section class="page" id="page-download">
+        <div class="card pad">
+          <div class="dl-tabs" id="dlTabs">
+            <button class="dl-tab active" data-mode="vanilla">原版 Minecraft</button>
+            <button class="dl-tab" data-mode="loader">模组加载器</button>
+          </div>
+
+          <div id="dlVanilla">
+            <div class="toolbar">
+              <div class="field grow">
+                <input type="search" id="verSearch" placeholder="搜索版本号，例如 1.20.1" autocomplete="off">
+              </div>
+              <label class="switch-line">
+                <input type="checkbox" id="verSnapshots"><span>显示快照</span>
+              </label>
+              <button class="btn btn-soft btn-sm" id="btnReloadVersions">刷新清单</button>
+            </div>
+            <div class="version-list" id="versionList"><div class="loading-line">加载版本清单中…</div></div>
+          </div>
+
+          <div id="dlLoader" class="hidden">
+            <div class="form-grid">
+              <div class="field">
+                <label>Minecraft 版本</label>
+                <select id="loaderMc"><option value="">读取版本中…</option></select>
+              </div>
+              <div class="field">
+                <label>加载器</label>
+                <select id="loaderType">
+                  <option value="fabric">Fabric（推荐，轻量）</option>
+                  <option value="forge">Forge（老牌模组多）</option>
+                  <option value="neoforge">NeoForge（1.20.2+ 新分支）</option>
+                  <option value="quilt">Quilt（Fabric 分支）</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>加载器版本</label>
+                <select id="loaderVersion"><option value="">自动选择最新</option></select>
+              </div>
+              <div class="field field-btn">
+                <label>&nbsp;</label>
+                <button class="btn btn-primary" id="btnInstallLoader">下载并安装</button>
+              </div>
+            </div>
+            <p class="hint">安装加载器会自动先装对应的原版版本，然后叠加加载器，全程无需手动操作。</p>
+          </div>
+        </div>
+
+        <div class="section-head">
+          <h2>已安装版本</h2>
+          <span class="muted" id="installedCount"></span>
+        </div>
+        <div class="version-list" id="installedVersions"></div>
+      </section>
+
+      <!-- ---------- 下载管理 ---------- -->
+      <section class="page" id="page-downloads">
+        <div class="dl-stats" id="dlStats"></div>
+
+        <div class="section-head">
+          <h2>进行中 <span class="muted" id="dlRunningCount"></span></h2>
+          <button class="btn btn-soft btn-sm" id="btnCancelAll">全部取消</button>
+        </div>
+        <div id="dlRunning"></div>
+
+        <div class="section-head">
+          <h2>下载历史 <span class="muted" id="dlHistoryCount"></span></h2>
+          <div class="row-gap">
+            <div class="dl-filter" id="dlFilter">
+              <button class="kind-tab active" data-f="all">全部</button>
+              <button class="kind-tab" data-f="done">成功</button>
+              <button class="kind-tab" data-f="error">失败</button>
+            </div>
+            <button class="btn btn-soft btn-sm" id="btnClearHistory">清空历史</button>
+          </div>
+        </div>
+        <div id="dlHistory"></div>
+      </section>
+
+      <!-- ---------- 内容下载（只负责「找」和「装」） ---------- -->
+      <section class="page" id="page-store">
+        <div class="card pad">
+          <div class="toolbar">
+            <div class="field grow">
+              <label>下载到实例</label>
+              <select id="storeInstance"><option value="">请先创建实例</option></select>
+            </div>
+            <div class="field">
+              <label>数据源</label>
+              <select id="storeSource">
+                <option value="modrinth">Modrinth（无需配置）</option>
+                <option value="curseforge">CurseForge（需 API Key）</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>内容类型</label>
+              <select id="storeKind">
+                <option value="mod">模组</option>
+                <option value="shader">光影包</option>
+                <option value="resourcepack">资源包</option>
+                <option value="datapack">数据包</option>
+                <option value="modpack">整合包</option>
+              </select>
+            </div>
+            <div class="field grow">
+              <label>搜索</label>
+              <input type="search" id="storeQuery" placeholder="支持中文，例如：钠 / 机械动力 / 光影" autocomplete="off">
+            </div>
+            <button class="btn btn-primary" id="btnStoreSearch">搜索</button>
+            <button class="btn btn-soft" id="btnPackImport">导入本地整合包</button>
+          </div>
+          <p class="hint">
+            这里只负责「找」和「装」。装好之后要启用/禁用/删除，请到
+            <b>实例 → 选中实例 → 模组 / 光影 / 资源包</b> 里管理（每个实例互不影响）。
+          </p>
+        </div>
+        <div id="storeResults"></div>
+      </section>
+
+      <!-- ---------- 实例（管理入口，模组等是它的子项） ---------- -->
+      <section class="page" id="page-instances">
+        <div id="instListView">
+          <div class="section-head">
+            <h2>我的实例</h2>
+            <button class="btn btn-primary btn-sm" id="btnNewInst2">+ 新建实例</button>
+          </div>
+          <div class="instance-grid" id="instanceGridFull"></div>
+        </div>
+
+        <div id="instDetailView" class="hidden">
+          <button class="btn btn-ghost btn-sm" id="btnBackToList" style="margin-bottom:12px">← 返回实例列表</button>
+          <div class="inst-hero" id="instHero"></div>
+          <div class="inst-tabs" id="instTabs"></div>
+          <div id="instTabBody"></div>
+        </div>
+      </section>
+
+      <!-- ---------- 设置 ---------- -->
+      <section class="page" id="page-settings">
+        <div class="settings-grid">
+
+          <div class="card pad wide">
+            <div class="card-head">
+              <h3>主题外观</h3>
+              <span class="badge" id="themeCurrent">Nova</span>
+            </div>
+            <div class="theme-grid" id="themeGrid"></div>
+            <p class="hint">主题保存在本机，下次打开自动应用。浅色主题适合白天使用。</p>
+          </div>
+
+          <div class="card pad">
+            <div class="card-head"><h3>玩家信息</h3></div>
+            <div class="field">
+              <label>游戏内用户名（离线模式）</label>
+              <input type="text" id="setUsername" placeholder="Player" maxlength="16">
+              <p class="hint">离线启动使用的名字。正版账号请用官方启动器登录后游玩，本启动器不提供正版验证绕过。</p>
+            </div>
+          </div>
+
+          <div class="card pad">
+            <div class="card-head">
+              <h3>启动优化</h3>
+              <span class="badge ok" id="autoOptBadge">已开启</span>
+            </div>
+            <label class="switch-line big">
+              <input type="checkbox" id="setAutoOptimize" checked>
+              <span>启动游戏时自动优化内存</span>
+            </label>
+            <p class="hint">开启后每次启动都会按「当前可用内存 + 模组数量」重新计算分配值与 JVM 预设，
+              不必手动调；下面的内存与预设设置仅在关闭此开关后生效。</p>
+            <div class="autotune-box" id="autotunePreview"></div>
+          </div>
+
+          <div class="card pad">
+            <div class="card-head">
+              <h3>中文汉化</h3>
+              <span class="badge" id="cfpaBadge">未安装</span>
+            </div>
+            <p class="hint" style="margin-top:0">
+              模组界面变中文：安装 <b>CFPA 简体中文语言包</b>（由社区团队 CFPAOrg 维护的自动汉化模组），
+              它会自动下载并更新模组翻译。
+            </p>
+            <div class="row-gap" style="margin-top:10px">
+              <button class="btn btn-primary btn-sm" id="btnInstallCfpa">一键安装汉化</button>
+              <button class="btn btn-soft btn-sm" id="btnCfpaStatus">刷新状态</button>
+            </div>
+            <div class="autotune-box" id="cfpaInfo"></div>
+          </div>
+
+          <div class="card pad">
+            <div class="card-head">
+              <h3>内存分配</h3>
+              <span class="badge" id="memRecBadge">推荐 0 MB</span>
+            </div>
+            <div class="field">
+              <label>生效对象 <b id="memTarget">全局默认</b></label>
+            </div>
+            <div class="field">
+              <label>分配给游戏的堆内存 <b id="memShow">—</b></label>
+              <input type="range" id="setMemory" min="512" max="16384" step="256">
+              <div class="slider-marks"><span>512 MB</span><span>8 GB</span><span>16 GB</span></div>
+            </div>
+            <div class="field">
+              <label>JVM 优化预设</label>
+              <select id="setJvmPreset"></select>
+              <p class="hint" id="jvmPresetDesc"></p>
+            </div>
+            <div class="field">
+              <label>额外 JVM 参数（可选）</label>
+              <input type="text" id="setExtraJvm" placeholder="-XX:+UseZGC">
+            </div>
+          </div>
+
+          <div class="card pad">
+            <div class="card-head">
+              <h3>Java 运行时</h3>
+              <button class="btn btn-soft btn-sm" id="btnDetectJava">重新检测</button>
+            </div>
+            <div id="javaList" class="java-list"></div>
+            <div class="row-gap" style="margin-top:12px">
+              <button class="btn btn-soft btn-sm" data-install-java="8">装 Java 8</button>
+              <button class="btn btn-soft btn-sm" data-install-java="17">装 Java 17</button>
+              <button class="btn btn-soft btn-sm" data-install-java="21">装 Java 21</button>
+            </div>
+            <p class="hint">Java 由 Eclipse Adoptium (Temurin) 官方 API 下载，版权归 Adoptium / OpenJDK 社区。</p>
+          </div>
+
+          <div class="card pad">
+            <div class="card-head">
+              <h3>内容源（CurseForge）</h3>
+              <span class="badge gray" id="cfBadge">未配置</span>
+            </div>
+            <div class="field">
+              <label>CurseForge API Key</label>
+              <input type="text" id="setCfKey" placeholder="粘贴你申请到的 API Key" autocomplete="off">
+              <p class="hint">
+                CurseForge 的 API 需要人工审核发放，申请入口
+                <a href="https://console.curseforge.com/" target="_blank" rel="noopener" style="color:var(--accent-2)">console.curseforge.com</a>。
+                填好之后「内容下载」就能在 Modrinth / CurseForge 之间切换。
+              </p>
+            </div>
+            <div class="row-gap">
+              <button class="btn btn-soft btn-sm" id="btnCfSave">保存并测试</button>
+              <button class="btn btn-ghost btn-sm" id="btnCfClear">清除</button>
+            </div>
+          </div>
+
+          <div class="card pad">
+            <div class="card-head"><h3>下载源</h3></div>
+            <div class="field">
+              <label>游戏文件下载源</label>
+              <select id="setSource">
+                <option value="auto">自动（优先镜像，失败回落官方）</option>
+                <option value="mirror">仅镜像 BMCLAPI（国内最快）</option>
+                <option value="official">仅官方 Mojang</option>
+              </select>
+              <p class="hint">镜像服务由 <b>BMCLAPI</b>（作者 bangbang93，MIT 许可）提供，本项目仅做 URL 重写。</p>
+            </div>
+            <div class="field">
+              <label>并发下载数</label>
+              <input type="number" id="setConcurrency" min="1" max="32">
+            </div>
+          </div>
+
+          <div class="card pad">
+            <div class="card-head"><h3>工具与维护</h3></div>
+            <div class="row-gap">
+              <button class="btn btn-soft btn-sm" data-open="data">数据目录</button>
+              <button class="btn btn-soft btn-sm" data-open="shared">共享库</button>
+              <button class="btn btn-soft btn-sm" data-open="cache">缓存</button>
+            </div>
+            <div class="row-gap" style="margin-top:10px">
+              <button class="btn btn-soft btn-sm" id="btnClearCache">清理图标缓存</button>
+              <button class="btn btn-soft btn-sm" id="btnShowServerLog">查看服务日志</button>
+            </div>
+            <p class="hint">数据目录：<code id="dataDirPath">—</code><br>
+              游戏本体、依赖库、资源文件在「共享库」里由所有实例共用；实例之间互相隔离。</p>
+          </div>
+
+          <div class="card pad wide">
+            <div class="card-head"><h3>关于与开源声明</h3></div>
+            <p class="hint">
+              Nova Launcher 为原创实现，使用与借鉴的第三方成果均已标注。完整声明见项目根目录
+              <code>开源归属与致谢.md</code>。
+            </p>
+            <div class="notice-list" id="noticeList"></div>
+            <button class="btn btn-soft btn-sm" id="btnShowNotice">查看完整开源声明</button>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<!-- ================= 任务面板 ================= -->
+<div class="taskbar hidden" id="taskbar">
+  <div class="taskbar-head">
+    <span class="taskbar-title">任务队列</span>
+    <button class="icon-btn sm" id="btnToggleTasks">
+      <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+    </button>
+  </div>
+  <div class="taskbar-body" id="taskbarBody"></div>
+</div>
+
+<!-- ================= 弹窗 ================= -->
+<div class="modal-root hidden" id="modalRoot">
+  <div class="modal-mask" id="modalMask"></div>
+  <div class="modal" id="modalBox"></div>
+</div>
+
+<!-- ================= 通知 ================= -->
+<div class="toasts" id="toasts"></div>
+
+<!-- 隐藏的导入 input -->
+<input type="file" id="fileInput" multiple style="display:none">
+
+<script src="/app.js"></script>
+</body>
+</html>
