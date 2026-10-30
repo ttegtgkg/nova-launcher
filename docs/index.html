@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nova Launcher · 新星启动器</title>
+<style>
+  :root {
+    --bg: #07080d; --panel: #0f111a; --card: rgba(255,255,255,.045);
+    --stroke: rgba(255,255,255,.09); --text: #e9ecf6; --dim: #98a1b6; --mute: #626c82;
+    --a: #8b5cf6; --b: #22d3ee;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 64px 24px 96px; }
+  header { text-align: center; padding: 40px 0 56px; }
+  .logo {
+    width: 76px; height: 76px; margin: 0 auto 22px; border-radius: 20px;
+    display: grid; place-items: center; font-size: 34px; font-weight: 800; color: #fff;
+    background: linear-gradient(135deg, var(--a), var(--b));
+    box-shadow: 0 14px 44px rgba(139,92,246,.4);
+  }
+  h1 {
+    font-size: 40px; font-weight: 800; letter-spacing: -1px; margin-bottom: 10px;
+    background: linear-gradient(100deg, #f5f3ff, #a5f3fc);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .sub { color: var(--dim); font-size: 15px; }
+  .badges { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-top: 20px; }
+  .badge {
+    font-size: 12px; padding: 4px 12px; border-radius: 99px;
+    background: var(--card); border: 1px solid var(--stroke); color: var(--dim);
+  }
+  h2 { font-size: 19px; margin: 44px 0 16px; font-weight: 700; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+  .card {
+    padding: 18px 20px; border-radius: 14px;
+    background: var(--card); border: 1px solid var(--stroke);
+  }
+  .card h3 { font-size: 14px; margin-bottom: 6px; font-weight: 650; }
+  .card p { font-size: 13px; color: var(--mute); line-height: 1.65; }
+  ul { padding-left: 20px; }
+  li { margin: 7px 0; color: var(--dim); font-size: 14px; }
+  code {
+    font-family: Consolas, monospace; font-size: 12.5px;
+    background: rgba(255,255,255,.08); padding: 2px 7px; border-radius: 5px; color: #a5f3fc;
+  }
+  pre {
+    background: rgba(0,0,0,.42); border: 1px solid var(--stroke); border-radius: 12px;
+    padding: 16px; overflow-x: auto; font-size: 12.5px; line-height: 1.7;
+    font-family: Consolas, monospace; color: #b9c2d6;
+  }
+  .cta {
+    display: inline-block; margin-top: 10px; padding: 12px 28px; border-radius: 12px;
+    background: linear-gradient(100deg, var(--a), var(--b)); color: #fff;
+    text-decoration: none; font-weight: 650; font-size: 14px;
+  }
+  footer {
+    margin-top: 64px; padding-top: 26px; border-top: 1px solid var(--stroke);
+    font-size: 12px; color: var(--mute); text-align: center; line-height: 2;
+  }
+  a { color: var(--b); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="logo">N</div>
+    <h1>Nova Launcher</h1>
+    <p class="sub">新星启动器 · 轻量、开源、为低配电脑与国内网络优化的 Minecraft 启动器</p>
+    <div class="badges">
+      <span class="badge">Windows</span>
+      <span class="badge">MIT License</span>
+      <span class="badge">零第三方依赖</span>
+      <span class="badge">免费 · 无广告</span>
+      <span class="badge">安装包 35 MB</span>
+    </div>
+  </header>
+
+  <h2>这是什么</h2>
+  <p style="color:var(--dim);font-size:14.5px">
+    一个用 Node.js + C# 从零实现的 Minecraft 启动器。自带运行环境与桌面窗口，
+    装完就是一个独立应用，不需要浏览器，也不依赖任何第三方打包工具。
+  </p>
+
+  <h2>主要功能</h2>
+  <div class="grid">
+    <div class="card">
+      <h3>实例隔离</h3>
+      <p>每个实例有独立的模组、资源包、光影、存档、截图与配置，互不干扰。</p>
+    </div>
+    <div class="card">
+      <h3>内存优化</h3>
+      <p>启动时按当前可用内存与模组数量自动分配堆大小，并给出可解释的理由。</p>
+    </div>
+    <div class="card">
+      <h3>Java 自动安装</h3>
+      <p>检测不到合适版本时自动下载安装（Amazon Corretto / Microsoft OpenJDK 多源回退）。</p>
+    </div>
+    <div class="card">
+      <h3>内容下载</h3>
+      <p>接入 Modrinth 开放 API，支持中文搜索、拼写纠错与相似名匹配。</p>
+    </div>
+    <div class="card">
+      <h3>存档编辑</h3>
+      <p>直接读取 level.dat，修改游戏模式、难度、作弊开关，保存前自动备份。</p>
+    </div>
+    <div class="card">
+      <h3>下载中心</h3>
+      <p>实时速度、进度、剩余时间，支持取消与失败重试，历史记录持久化。</p>
+    </div>
+  </div>
+
+  <h2>技术实现</h2>
+  <ul>
+    <li><b>后端</b>：Node.js 原生 <code>http</code> / <code>https</code> / <code>zlib</code> / <code>crypto</code>，<b>零 npm 依赖</b></li>
+    <li><b>桌面外壳</b>：C# WinForms + WebView2，把界面装进自己的窗口</li>
+    <li><b>安装程序</b>：C# 手写，用系统自带 <code>csc.exe</code> 编译，无需 Inno Setup / NSIS</li>
+    <li><b>前端</b>：手写 HTML / CSS / JavaScript，无框架、无 CDN，完全离线可用</li>
+  </ul>
+
+  <h2>快速开始</h2>
+  <p style="color:var(--dim);font-size:14px;margin-bottom:12px">
+    从 <a href="https://github.com/">Releases</a> 下载安装包，双击即可。
+  </p>
+<pre>NovaLauncher-Setup.exe        # 图形安装
+NovaLauncher-Setup.exe /S     # 静默安装
+NovaLauncher-Setup.exe /UNINSTALL /S   # 静默卸载</pre>
+
+  <h2>关于内容来源</h2>
+  <p style="color:var(--dim);font-size:14px">
+    本启动器<b>不包含、不重新分发</b>任何游戏本体、模组或整合包文件。
+    所有内容均按官方公开地址或开放 API 由用户本机直接下载：
+    Minecraft 本体来自 Mojang 官方清单，模组与整合包来自 Modrinth 开放 API。
+    对于作者关闭第三方下载的文件，启动器不会下载，只提供跳转项目页的入口。
+  </p>
+  <p style="color:var(--dim);font-size:14px;margin-top:10px">
+    Minecraft 是 Mojang Studios 的商标，本项目与其无关联、未获背书。
+    请通过官方渠道购买游戏以支持开发者。
+  </p>
+
+  <footer>
+    Nova Launcher · MIT License<br>
+    <a href="./开源归属与致谢.md">开源归属与致谢</a>
+  </footer>
+
+</div>
+</body>
+</html>
