@@ -312,10 +312,21 @@ namespace NovaShell
             }
 
             CoreWebView2 core = _wv.CoreWebView2;
-            core.Settings.AreDefaultContextMenusEnabled = true;
-            core.Settings.AreDevToolsEnabled = true;         // F12 调试，方便排查
+            // ── 彻底关掉一切「浏览器」痕迹 ──
+            // 只有带 --dev 参数启动时才保留 DevTools，方便我排查问题
+            bool devMode = _devMode;
+            core.Settings.AreDevToolsEnabled = devMode;              // F12 / Ctrl+Shift+I
+            core.Settings.AreDefaultContextMenusEnabled = devMode;   // 右键菜单
+            core.Settings.AreBrowserAcceleratorKeysEnabled = false;  // Ctrl+R/F5/Ctrl+P/Ctrl+F 等
             core.Settings.IsStatusBarEnabled = false;
-            core.Settings.AreBrowserAcceleratorKeysEnabled = true;
+            core.Settings.IsZoomControlEnabled = false;              // Ctrl+滚轮缩放
+            core.Settings.IsPinchZoomEnabled = false;
+            core.Settings.IsSwipeNavigationEnabled = false;          // 触控板左右滑前进后退
+            core.Settings.IsGeneralAutofillEnabled = false;
+            core.Settings.IsPasswordAutosaveEnabled = false;
+            core.Settings.IsWebMessageEnabled = false;
+            // 不允许网页弹新窗口 / 打开文件选择以外的浏览器行为
+            try { core.Settings.IsReputationCheckingRequired = false; } catch { }
 
             // 站外链接（官网/MC百科）一律交给系统浏览器，不在启动器里打开
             core.NewWindowRequested += delegate (object s, CoreWebView2NewWindowRequestedEventArgs e)
@@ -333,6 +344,35 @@ namespace NovaShell
                     e.Cancel = true;
                     OpenExternal(target);
                 }
+            };
+
+            // 双保险：即使在 devMode 关闭的情况下也拦截 F12 / Ctrl+Shift+I / 右键
+            core.WebMessageReceived += delegate { };
+            core.DOMContentLoaded += async delegate
+            {
+                if (devMode) return;
+                try
+                {
+                    await core.ExecuteScriptAsync(@"
+                        (function(){
+                          var block = function(e){
+                            if (e.key === 'F12' ||
+                                (e.ctrlKey && e.shiftKey && (e.key === 'I' || e.key === 'i' || e.key === 'J' || e.key === 'j' || e.key === 'C' || e.key === 'c')) ||
+                                (e.ctrlKey && (e.key === 'u' || e.key === 'U'))) {
+                              e.preventDefault(); e.stopPropagation(); return false;
+                            }
+                          };
+                          document.addEventListener('keydown', block, true);
+                          document.addEventListener('contextmenu', function(e){
+                            var t = e.target;
+                            if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
+                            e.preventDefault();
+                          }, true);
+                          document.addEventListener('dragstart', function(e){ e.preventDefault(); }, true);
+                        })();
+                    ");
+                }
+                catch { }
             };
 
             core.Navigate(url);

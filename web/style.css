@@ -1308,3 +1308,20 @@ input[type=range]::-webkit-slider-thumb:active { cursor: grabbing; transform: sc
   .orb, .ti-fill::after, .dlt-fill::after { animation: none; }
   * { transition-duration: .01ms !important; }
 }
+
+/* ---------------------------------------------- 去浏览器化 */
+
+/* 禁止像网页一样选中文字、拖拽图片 */
+* {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+/* 但输入框、日志、代码块要能选中复制 */
+input, textarea, pre, code, .log-box, .detail-desc, .modal pre,
+.autotune-box, .notice-row {
+  -webkit-user-select: text;
+  user-select: text;
+}
+input, textarea { cursor: text; }
+html, body { overscroll-behavior: none; }
