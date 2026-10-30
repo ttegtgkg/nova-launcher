@@ -297,7 +297,12 @@ namespace NovaShell
             CoreWebView2Environment env = null;
             try
             {
-                CoreWebView2EnvironmentOptions opt = new CoreWebView2EnvironmentOptions("--disable-features=msWebOOUI,msPdfOOUI");
+                // 非 dev 模式：内核级禁用 DevTools（比 AreDevToolsEnabled 更彻底），
+                // 同时关掉内置 PDF 查看器、错误页等"浏览器感"组件
+                string browserArgs = _devMode
+                    ? "--disable-features=msWebOOUI,msPdfOOUI"
+                    : "--disable-dev-tools --disable-features=msWebOOUI,msPdfOOUI,msEdgeIdentityFeature,msEdgeTranslate --disable-background-networking";
+                CoreWebView2EnvironmentOptions opt = new CoreWebView2EnvironmentOptions(browserArgs);
                 env = await CoreWebView2Environment.CreateAsync(null, userData, opt);
                 await _wv.EnsureCoreWebView2Async(env);
             }
@@ -355,20 +360,42 @@ namespace NovaShell
                 {
                     await core.ExecuteScriptAsync(@"
                         (function(){
+                          if (window.__novaLocked) return; window.__novaLocked = true;
+                          var FN = /^F([1-9]|1[0-2])$/;
+                          // 允许的 Ctrl 组合（文本编辑），其余一律吞掉
+                          var ALLOW = ['a','c','v','x','z','y','A','C','V','X','Z','Y'];
                           var block = function(e){
-                            if (e.key === 'F12' ||
-                                (e.ctrlKey && e.shiftKey && (e.key === 'I' || e.key === 'i' || e.key === 'J' || e.key === 'j' || e.key === 'C' || e.key === 'c')) ||
-                                (e.ctrlKey && (e.key === 'u' || e.key === 'U'))) {
+                            var k = e.key || '';
+                            // 1) 所有功能键 F1~F12
+                            if (FN.test(k)) { e.preventDefault(); e.stopPropagation(); return false; }
+                            // 2) Ctrl / Cmd 组合
+                            if (e.ctrlKey || e.metaKey) {
+                              if (ALLOW.indexOf(k) >= 0) return;
+                              // Ctrl+Shift+任意键也吞
+                              if (e.shiftKey || e.altKey) { e.preventDefault(); e.stopPropagation(); return false; }
                               e.preventDefault(); e.stopPropagation(); return false;
+                            }
+                            // 3) Alt + 方向键 / Home（前进后退、主页）
+                            if (e.altKey && (k === 'ArrowLeft' || k === 'ArrowRight' || k === 'Home')) {
+                              e.preventDefault(); e.stopPropagation(); return false;
+                            }
+                            // 4) 单独的 Backspace 不触发后退
+                            if (k === 'Backspace') {
+                              var el = document.activeElement || {};
+                              var tag = (el.tagName || '').toUpperCase();
+                              if (tag !== 'INPUT' && tag !== 'TEXTAREA') { e.preventDefault(); return false; }
                             }
                           };
                           document.addEventListener('keydown', block, true);
+                          // 右键菜单：仅输入框保留
                           document.addEventListener('contextmenu', function(e){
-                            var t = e.target;
-                            if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
-                            e.preventDefault();
+                            var t = e.target, tag = (t && t.tagName || '').toUpperCase();
+                            if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+                            e.preventDefault(); e.stopPropagation();
                           }, true);
+                          // 拖拽图片/文字
                           document.addEventListener('dragstart', function(e){ e.preventDefault(); }, true);
+                          document.addEventListener('drop', function(e){ e.preventDefault(); }, false);
                         })();
                     ");
                 }
