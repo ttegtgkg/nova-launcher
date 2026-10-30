@@ -56,6 +56,9 @@
 
 ### 方式二：源码运行（开发用）
 
+> 想要桌面图标？跑一次 `powershell -ExecutionPolicy Bypass -File tools\创建快捷方式.ps1`
+> 就会在桌面和开始菜单放好带图标的快捷方式（指向项目根的 `NovaLauncher.exe`）。
+
 1. 确认装了 **Node.js 18+**（`node -v` 能输出版本号即可）
 2. 双击项目根目录的 **`NovaLauncher.exe`** —— 同样是独立窗口（会用系统 PATH 里的 node）
 3. 或者双击 **`启动.bat`** —— 命令行模式，服务起来后用浏览器打开 `http://127.0.0.1:7420`
