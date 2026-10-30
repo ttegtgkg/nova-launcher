@@ -1,12 +1,42 @@
 # Nova Launcher · 新星启动器
 
+<p align="center">
+  <img src="docs/screenshots/home.png" alt="Nova Launcher" width="900">
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/platform-Windows-0078D4?style=flat-square" alt="Windows">
+  <img src="https://img.shields.io/badge/license-MIT-8b5cf6?style=flat-square" alt="MIT">
+  <img src="https://img.shields.io/badge/dependencies-0-22d3ee?style=flat-square" alt="Zero deps">
+  <img src="https://img.shields.io/badge/size-35MB-34d399?style=flat-square" alt="35MB">
+</p>
+
+一个用 **Node.js + C#** 从零实现的 Minecraft 启动器。装完就是独立桌面应用，**不依赖浏览器**，
+**零第三方运行时依赖**，为低配电脑与国内网络环境优化。
+
+| | |
+|---|---|
+| **实例隔离** | 每个实例独立的模组 / 资源包 / 光影 / 存档 / 截图，互不干扰 |
+| **内存优化** | 启动时按当前可用内存 + 模组数量动态计算，决策过程写进日志 |
+| **Java 自动安装** | 检测不到合适版本就自动下载（Corretto / Microsoft / Adoptium 多源回退）|
+| **内容下载** | Modrinth 开放 API，支持中文搜索、拼写纠错、相似名匹配 |
+| **存档编辑** | 直接改 `level.dat` 的游戏模式 / 难度 / 作弊开关，保存前自动备份 |
+| **整合包** | `.mrpack` 与普通 zip 拖进窗口自动识别，独立建实例 |
+| **下载中心** | 实时速度、剩余时间、失败重试，历史记录持久化 |
+| **7 套主题** | 深色 6 套 + 浅色 1 套，CSS 变量驱动，即时切换 |
+
+## 界面
+
+| 实例详情 | 内容下载 |
+|---|---|
+| ![实例](docs/screenshots/instance.png) | ![下载](docs/screenshots/store.png) |
+| **存档管理** | **首页** |
+| ![存档](docs/screenshots/saves.png) | ![首页](docs/screenshots/home.png) |
+
+---
+
 > 仓库地址：https://github.com/ttegtgkg/nova-launcher
-> 项目主页：https://ttegtgkg.github.io/nova-launcher/
-
-一个**零依赖、轻量、开箱即用**的 Minecraft 启动器。为低配电脑和国内网络环境优化。
-
-> 纯 Node.js 原生实现：没有任何 npm 依赖、没有 Electron、没有打包器。
-> 界面是手写的深色玻璃拟态网页，浏览器打开即用。
+> 项目介绍页：https://ttegtgkg.github.io/nova-launcher/ （`*.github.io` 在国内可能无法访问，以仓库内文档为准）
 
 ---
 
