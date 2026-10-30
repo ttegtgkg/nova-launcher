@@ -1300,7 +1300,75 @@ async function storeInstall(projectId) {
 
 /* ------------------------------------------------------------ 实例页 */
 
-const INST = { detailId: null, tab: 'overview', counts: {} };
+const INST = { detailId: null, tab: 'overview', counts: {}, page: {} };
+
+/** 内容列表一页多少个（模组 / 资源包 / 光影 / 数据包） */
+const PAGE_SIZE = 30;
+
+/**
+ * 分页条：第一页 / 上一页 / 数字页码 / 下一页 / 最后一页。
+ * 页码多于 7 个时两头留省略号，始终能看到首末页 —— 不然装了 300 个模组
+ * 就变成一堵数字墙。
+ */
+function pagerHtml(total, page, pageSize) {
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  if (pages <= 1) return '';
+  const start = (page - 1) * pageSize + 1;
+  const end = Math.min(total, page * pageSize);
+
+  // 挑出要显示的数字：首、末、当前 ±1，其余折叠
+  const nums = [];
+  const push = (n) => { if (n >= 1 && n <= pages && !nums.includes(n)) nums.push(n); };
+  push(1);
+  for (let i = page - 1; i <= page + 1; i++) push(i);
+  push(pages);
+  nums.sort((a, b) => a - b);
+
+  let cells = '';
+  let prev = 0;
+  for (const n of nums) {
+    if (prev && n - prev > 1) cells += `<span class="pg-gap">…</span>`;
+    cells += `<button class="pg-num${n === page ? ' active' : ''}" data-pg="${n}">${n}</button>`;
+    prev = n;
+  }
+
+  const at = (cond) => cond ? ' disabled' : '';
+  return `<div class="pager">
+    <span class="pg-info">第 ${start}–${end} 个 · 共 ${total} 个 · 第 ${page}/${pages} 页</span>
+    <button class="pg-btn" data-pg="first"${at(page === 1)}>第一页</button>
+    <button class="pg-btn" data-pg="prev"${at(page === 1)}>上一页</button>
+    <span class="pg-nums">${cells}</span>
+    <button class="pg-btn" data-pg="next"${at(page === pages)}>下一页</button>
+    <button class="pg-btn" data-pg="last"${at(page === pages)}>最后一页</button>
+  </div>`;
+}
+
+/** 把 data-pg 的点击翻译成目标页码 */
+function bindPager(root, page, total, pageSize, go) {
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  $$('[data-pg]', root).forEach(b => b.onclick = () => {
+    const v = b.dataset.pg;
+    const n = v === 'first' ? 1 : v === 'last' ? pages
+      : v === 'prev' ? page - 1 : v === 'next' ? page + 1 : Number(v);
+    if (!Number.isFinite(n) || n < 1 || n > pages || n === page) return;
+    go(n);
+  });
+}
+
+/**
+ * 翻页后让列表回到视野顶部。
+ * 真正的滚动容器是 .pages，所以不能用 scrollIntoView —— 那会把实例标题
+ * 和标签栏一起滚出去，翻完页就不知道自己在看什么了。
+ * 因此以标签栏为锚点，保证「标签栏 + 工具条 + 第一行卡片」都在画面里。
+ */
+function scrollTabToTop(el) {
+  const sc = el.closest('.pages') || document.querySelector('.pages');
+  if (!sc) return;
+  const anchor = document.querySelector('#instTabs') || el;
+  const delta = anchor.getBoundingClientRect().top - sc.getBoundingClientRect().top;
+  if (delta > -10) return;                 // 已经在上方，不用动
+  sc.scrollBy({ top: delta - 10, behavior: 'smooth' });
+}
 
 const INST_TABS = [
   { key: 'overview', label: '概览' },
@@ -1425,6 +1493,8 @@ async function renderInstTab() {
   const inst = S.instances.find(i => i.id === INST.detailId);
   const body = $('#instTabBody');
   if (!inst || !body) return;
+  // 换了实例就从头开始 —— 上一个实例的页码对这份文件列表毫无意义
+  if (INST.pageInst !== inst.id) { INST.page = {}; INST.pageInst = inst.id; }
   body.innerHTML = '<div class="loading-line">读取中…</div>';
   try {
     if (INST.tab === 'overview') await renderTabOverview(inst, body);
@@ -1493,28 +1563,58 @@ async function renderTabContent(inst, body, kind) {
       <button class="btn btn-soft btn-sm" data-goto-store="${esc(kind)}">去下载</button>
       <button class="btn btn-soft btn-sm" data-import-kind="${esc(kind)}">从电脑导入</button>
     </div>
-    <div class="content-grid" id="instContentGrid">${
-    items.length ? items.map(it => contentItemHtml(it, kind)).join('')
-      : `<div class="empty"><div class="em-ico">＋</div><div class="em-t">还没有${esc(kindLabel(kind))}</div>
-         <div class="em-d">点「去下载」从 Modrinth 搜索安装，或用「从电脑导入」放本地文件</div></div>`}</div>`;
+    ${items.length ? '' : `<div class="empty"><div class="em-ico">＋</div><div class="em-t">还没有${esc(kindLabel(kind))}</div>
+       <div class="em-d">点「去下载」从 Modrinth 搜索安装，或用「从电脑导入」放本地文件</div></div>`}
+    <div class="content-grid" id="instContentGrid"></div>
+    <div id="instPagerBox"></div>`;
 
   const grid = $('#instContentGrid', body);
-  $$('[data-toggle]', grid).forEach(b => b.onclick = async () => {
-    try {
-      await apiPost('/api/content/toggle', { instance: inst.id, kind, file: b.dataset.toggle });
-      await renderInstTab();
-    } catch (e) { toast('操作失败', e.message, 'error'); }
-  });
-  $$('[data-del]', grid).forEach(b => b.onclick = () => {
-    const f = b.dataset.del;
-    openModal(`<h2>删除文件？</h2><p class="modal-sub">${esc(f)}<br>只影响当前实例「${esc(inst.name)}」。</p>`, {
-      okText: '删除', onOk: async () => {
-        await apiPost('/api/content/delete', { instance: inst.id, kind, file: f });
-        toast('已删除', f, 'ok');
-        await renderInstTab();
-      },
+  const pagerBox = $('#instPagerBox', body);
+
+  /**
+   * 只重绘当前页 + 分页条，不重新请求数据 ——
+   * 翻页要跟手，30 个卡片重排是几十毫秒的事，没必要再走一趟 API。
+   */
+  function paint() {
+    const pages = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
+    // 删到当前页空掉时往回退，不会停在一片空白上
+    let page = Math.min(Math.max(1, INST.page[kind] || 1), pages);
+    INST.page[kind] = page;
+
+    const slice = items.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+    grid.innerHTML = slice.map(it => contentItemHtml(it, kind)).join('');
+    pagerBox.innerHTML = items.length > PAGE_SIZE ? pagerHtml(items.length, page, PAGE_SIZE) : '';
+    bindPager(pagerBox, page, items.length, PAGE_SIZE, (n) => {
+      INST.page[kind] = n;
+      paint();
+      scrollTabToTop(body);
     });
-  });
+
+    bindGrid();
+  }
+
+  /** 卡片上的开关 / 删除：每翻一页都要重新绑，因为 grid 是整体重建的 */
+  function bindGrid() {
+    $$('[data-toggle]', grid).forEach(b => b.onclick = async () => {
+      try {
+        await apiPost('/api/content/toggle', { instance: inst.id, kind, file: b.dataset.toggle });
+        await renderInstTab();
+      } catch (e) { toast('操作失败', e.message, 'error'); }
+    });
+    $$('[data-del]', grid).forEach(b => b.onclick = () => {
+      const f = b.dataset.del;
+      openModal(`<h2>删除文件？</h2><p class="modal-sub">${esc(f)}<br>只影响当前实例「${esc(inst.name)}」。</p>`, {
+        okText: '删除', onOk: async () => {
+          await apiPost('/api/content/delete', { instance: inst.id, kind, file: f });
+          toast('已删除', f, 'ok');
+          await renderInstTab();
+        },
+      });
+    });
+  }
+
+  paint();
+
   $$('[data-open-folder]', body).forEach(b => b.onclick = () =>
     apiPost('/api/instance/open-folder', { id: b.dataset.openFolder, kind: b.dataset.folder })
       .then(r => toast('已打开', r.dir, 'ok', 2500)).catch(() => { }));
@@ -2917,6 +3017,7 @@ async function boot() {
 
   if (S.page === 'home') { renderHome(); renderHero(); }
   switchPage('home');
+
 
   // 支持 ?page=download 之类的深链接（也方便做桌面快捷方式）
   const qs = new URLSearchParams(location.search);
