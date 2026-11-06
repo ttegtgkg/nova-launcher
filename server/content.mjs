@@ -9,6 +9,7 @@ import {
 } from './core.mjs';
 import { cnName, cnDescription, buildLinks, MOD_CN, CFPA_MODS } from './i18n.mjs';
 import { fuzzyLookup, needsFuzzy } from './search.mjs';
+import { checkInstanceDeps } from './deps.mjs';
 
 /* --------------------------------------------------------------- 实例管理 */
 
@@ -487,9 +488,15 @@ export async function mrProject(projectIdOrSlug) {
 }
 
 /** 下载某个 Modrinth 版本文件到实例对应目录，并递归拉取必需依赖 */
-export async function mrInstall(instanceId, kind, projectId, { versionId = null, mcVersion, loader, withDeps = true, task } = {}) {
+export async function mrInstall(instanceId, kind, projectId, { versionId = null, mcVersion, loader, withDeps = true, task, _chain = [] } = {}) {
   const k = KINDS[kind];
   if (!k) throw new Error('未知类型: ' + kind);
+  // 依赖可能环形（A 需要 B，B 又需要 A），链上出现过就直接返回，别无限递归
+  if (_chain.includes(projectId)) {
+    tlog(task, `跳过循环依赖 ${projectId}`);
+    return { installed: [], version: null };
+  }
+  const chain = [..._chain, projectId];
   const dir = path.join(INSTANCES, instanceId, k.dir);
   await fsp.mkdir(dir, { recursive: true });
 
@@ -544,12 +551,125 @@ export async function mrInstall(instanceId, kind, projectId, { versionId = null,
     for (const dep of ver.dependencies) {
       if (dep.dependency_type !== 'required' || !dep.project_id) continue;
       try {
-        const r = await mrInstall(instanceId, kind, dep.project_id, { mcVersion, loader, withDeps: false, task });
+        const r = await mrInstall(instanceId, kind, dep.project_id, { mcVersion, loader, withDeps: true, task, _chain: chain });
         installed.push(...r.installed);
-      } catch (e) { tlog(task, `依赖 ${dep.project_id} 安装失败: ${e.message}`); }
+      } catch (e) {
+        // 能查出名字就报名字，只有项目 id 的话用户根本看不懂 LNytGWDc 是什么
+        let label = dep.project_id;
+        try {
+          const dp = await httpJson(`${MR}/project/${encodeURIComponent(dep.project_id)}`,
+            { source: 'official', timeout: 12000 });
+          if (dp?.title) label = `${dp.title}（${dp.slug}）`;
+        } catch { }
+        tlog(task, `前置 ${label} 安装失败: ${e.message} —— 稍后会再核对一次`);
+      }
     }
   }
   return { installed, version: ver };
+}
+
+/* -------------------------------------------------------------- 前置依赖补装 */
+
+/**
+ * modId → Modrinth 项目。
+ * 大部分模组的 slug 就等于 modId（create / jei / sodium），先直查；
+ * 查不到再用搜索，只在「slug 完全一致」或「标题规范化后一致」时才认，
+ * 免得把 create 猜成某个叫「Create Xxx」的附属模组。
+ */
+async function findProjectByModId(modId) {
+  const id = String(modId || '').toLowerCase();
+  if (!id) return null;
+
+  // 1. 直接当 slug 查
+  try {
+    const p = await httpJson(`${MR}/project/${encodeURIComponent(id)}`, { source: 'official', timeout: 15000 });
+    if (p && p.id) return { id: p.id, slug: p.slug, title: p.title };
+  } catch { }
+
+  // 2. 搜索兜底
+  try {
+    const r = await mrSearch({ query: id, kind: 'mod', limit: 8 });
+    const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const want = norm(id);
+    // 完全一致的 slug 优先
+    let hit = r.hits.find(h => String(h.slug).toLowerCase() === id);
+    if (!hit) hit = r.hits.find(h => norm(h.slug) === want);
+    if (!hit) hit = r.hits.find(h => norm(h.title) === want);
+    if (hit) return { id: hit.id, slug: hit.slug, title: hit.title };
+  } catch { }
+
+  return null;
+}
+
+/**
+ * 对账并自动补齐缺失的前置。
+ *
+ * 装在「装完某个模组之后」和「启动游戏之前」两个时机 —— 前者让用户装完就是完整的，
+ * 后者兜住手动拖进 jar、或者当时网络失败漏装的情况。
+ * 最多跑 3 轮：补装前置本身也可能带出新缺口，但要防止互相依赖导致死循环。
+ */
+export async function autoInstallMissingDeps(instanceId, { task, mcVersion, loader, maxRounds = 3 } = {}) {
+  const report = { checked: 0, fixed: [], failed: [], remaining: [] };
+  const tried = new Set();
+  let round = 0;
+
+  while (round < maxRounds) {
+    const r = await checkInstanceDeps(instanceId);
+    report.checked = r.scanned;
+    const todo = r.missing.filter(m => !tried.has(m.modId));
+    if (!todo.length) { report.remaining = r.missing; break; }
+
+    for (const m of todo) {
+      tried.add(m.modId);
+      const proj = await findProjectByModId(m.modId).catch(() => null);
+      if (!proj) {
+        report.failed.push({ modId: m.modId, reason: 'Modrinth 上找不到对应项目', neededBy: m.neededBy });
+        tlog(task, `缺少前置 ${m.modId}，但 Modrinth 上找不到对应项目（被 ${m.neededBy.join('、')} 需要）`);
+        continue;
+      }
+      // 先看这个前置到底有没有适配当前版本/加载器的文件 —— 没有的话装不了，
+      // 而且说明是「这个模组在当前版本用不了」，得明确告诉用户，
+      // 别只丢一句「安装失败」让人去猜（Create 只支持到 1.21.1，
+      // 26.1.2 的「精妙背包×机械动力集成」就是这种死局）。
+      let vers = [];
+      try { vers = await mrVersions(proj.id, { mcVersion, loader }); } catch { }
+      if (!vers.length) {
+        const verLabel = `MC ${mcVersion}${loader ? ' / ' + loader : ''}`;
+        report.failed.push({
+          modId: m.modId, slug: proj.slug, title: proj.title, unsupported: true,
+          reason: `该前置没有适配 ${verLabel} 的版本`,
+          neededBy: m.neededBy,
+        });
+        tlog(task, `前置 ${proj.title} 没有适配 ${verLabel} 的版本 —— 需要它的模组在当前版本无法使用`);
+        continue;
+      }
+
+      tlog(task, `检测到缺少前置 ${m.modId}（被 ${m.neededBy.join('、')} 需要），从 Modrinth 补装 ${proj.title}`);
+      try {
+        const res = await mrInstall(instanceId, 'mod', proj.id, { mcVersion, loader, withDeps: true, task, _chain: [] });
+        report.fixed.push({
+          modId: m.modId, slug: proj.slug, title: proj.title,
+          file: res.installed?.[0]?.file || null,
+        });
+      } catch (e) {
+        report.failed.push({ modId: m.modId, slug: proj.slug, title: proj.title, reason: e.message, neededBy: m.neededBy });
+        tlog(task, `前置 ${m.modId} 自动安装失败: ${e.message}`);
+      }
+    }
+    round++;
+  }
+
+  if (report.fixed.length) {
+    tlog(task, `已自动补齐 ${report.fixed.length} 个前置：${report.fixed.map(f => f.modId).join('、')}`);
+  }
+  if (report.failed.length) {
+    tlog(task, `⚠ ${report.failed.length} 个前置没能补上：` +
+      report.failed.map(f => `${f.modId}（${f.reason}）`).join('；'));
+  }
+  if (report.remaining.length) {
+    tlog(task, `仍有 ${report.remaining.length} 个前置缺失：${report.remaining.map(m => m.modId).join('、')}（游戏可能无法启动）`);
+  }
+  return report;
 }
 
 /* -------------------------------------------------------------- 整合包安装 */

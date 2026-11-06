@@ -1618,10 +1618,49 @@ async function renderTabOverview(inst, body) {
 }
 
 /* ---- 模组 / 资源包 / 光影 / 数据包 ---- */
+
+/** 静默查一次前置（失败不打扰用户，检查失败就当没缺） */
+async function checkDepsQuiet(instanceId) {
+  try { return await apiGet(`/api/content/deps?instance=${encodeURIComponent(instanceId)}`); }
+  catch { return null; }
+}
+
+/**
+ * 前置缺失警告条。
+ * 模组缺前置，游戏一起来就是一屏 "Missing mandatory dependencies"，
+ * 所以直接把问题摆在列表上方，而不是等用户去读崩溃日志。
+ * 「被谁需要」那一段是可点的卸载入口 —— 当前置本身就不支持这个游戏版本时
+ * （机械动力只支持到 1.21.1，26.1.2 的机械动力集成装不了），
+ * 唯一的出路是把需要它的模组卸了，不该让用户自己回列表里找。
+ */
+function depsBannerHtml(deps) {
+  if (!deps || !deps.missing || !deps.missing.length) return '';
+  const list = deps.missing.map(m => {
+    const by = (m.neededBy || []).map(f =>
+      `<button class="dw-del" data-del-dep="${esc(f)}" title="卸载 ${esc(f)}">${
+        esc(f.replace(/\.jar(\.disabled)?$/i, '').slice(0, 36))}</button>`).join('、');
+    return `<li><b>${esc(m.modId)}</b>${m.range ? ` <span class="muted">${esc(m.range)}</span>` : ''}
+      <span class="muted">← 被</span> ${by} <span class="muted">需要</span></li>`;
+  }).join('');
+  return `<div class="deps-warn">
+    <div class="dw-head">⚠ 缺少 ${deps.missing.length} 个必需前置模组，游戏可能无法启动</div>
+    <ul class="dw-list">${list}</ul>
+    <div class="row-gap">
+      <button class="btn btn-primary btn-sm" data-fix-deps="1">一键补齐</button>
+      <span class="muted" style="font-size:11.5px">
+        从 Modrinth 自动找适配当前版本的前置；点上面的模组名可以直接卸载它。
+        前置本身不支持这个游戏版本时，卸掉需要它的模组才是正解。</span>
+    </div>
+  </div>`;
+}
+
 async function renderTabContent(inst, body, kind) {
   const items = await loadKindItems(inst.id, kind);
   INST.counts[INST.tab] = items.length;
   renderInstTabs(inst);
+
+  // 模组要额外对一次前置账：Modrinth 的依赖元数据不可靠，jar 里的声明才是准的
+  const deps = kind === 'mod' ? await checkDepsQuiet(inst.id) : null;
 
   const on = items.filter(i => i.enabled).length;
   body.innerHTML = `
@@ -1630,9 +1669,11 @@ async function renderTabContent(inst, body, kind) {
       <span class="st-hint">${items.length ? `${on}/${items.length} 启用 · 共 ${fmtSize(items.reduce((a, b) => a + (b.size || 0), 0))}` : '暂无'}</span>
       <span class="st-spacer"></span>
       <button class="btn btn-soft btn-sm" data-open-folder="${esc(inst.id)}" data-folder="${{ mod: 'mods', resourcepack: 'resourcepacks', shader: 'shaderpacks', datapack: 'datapacks' }[kind]}">打开文件夹</button>
+      ${kind === 'mod' ? `<button class="btn btn-soft btn-sm" data-check-deps="1">检查前置</button>` : ''}
       <button class="btn btn-soft btn-sm" data-goto-store="${esc(kind)}">去下载</button>
       <button class="btn btn-soft btn-sm" data-import-kind="${esc(kind)}">从电脑导入</button>
     </div>
+    ${depsBannerHtml(deps)}
     ${items.length ? '' : `<div class="empty"><div class="em-ico">＋</div><div class="em-t">还没有${esc(kindLabel(kind))}</div>
        <div class="em-d">点「去下载」从 Modrinth 搜索安装，或用「从电脑导入」放本地文件</div></div>`}
     <div class="content-grid" id="instContentGrid"></div>
@@ -1684,6 +1725,49 @@ async function renderTabContent(inst, body, kind) {
   }
 
   paint();
+
+  // 前置检查按钮
+  const chk = $('[data-check-deps]', body);
+  if (chk) chk.onclick = async () => {
+    chk.disabled = true; chk.textContent = '检查中…';
+    try {
+      const r = await apiGet(`/api/content/deps?instance=${encodeURIComponent(inst.id)}`);
+      if (!r.missing.length) toast('前置齐全', `扫描 ${r.scanned} 个模组，没有缺失的必需前置`, 'ok');
+      else toast('发现缺失前置', r.missing.map(m => m.modId).join('、'), 'warn', 6000);
+      await renderInstTab();
+    } catch (e) {
+      toast('检查失败', e.message, 'error');
+      chk.disabled = false; chk.textContent = '检查前置';
+    }
+  };
+  const fixBtn = $('[data-fix-deps]', body);
+  if (fixBtn) fixBtn.onclick = async () => {
+    fixBtn.disabled = true; fixBtn.textContent = '补齐中…';
+    try {
+      await apiPost('/api/content/deps/fix', { instance: inst.id });
+      toast('开始补齐前置', '进度见右下角任务面板', 'ok');
+      ensureTaskPolling();
+      setTimeout(() => renderInstTab(), 2500);
+    } catch (e) {
+      toast('补齐失败', e.message, 'error');
+      fixBtn.disabled = false; fixBtn.textContent = '一键补齐';
+    }
+  };
+  // 警告条里点模组名 → 直接卸载它（前置装不上时的正解）
+  $$('[data-del-dep]', body).forEach(b => b.onclick = () => {
+    const f = b.dataset.delDep;
+    openModal(`<h2>卸载这个模组？</h2>
+      <p class="modal-sub"><code>${esc(f)}</code><br>
+      它需要的前置模组在当前游戏版本里装不上，留着会导致游戏无法启动。</p>`, {
+      okText: '卸载', onOk: async () => {
+        try {
+          await apiPost('/api/content/delete', { instance: inst.id, kind, file: f });
+          toast('已卸载', f, 'ok');
+          await renderInstTab();
+        } catch (e) { toast('卸载失败', e.message, 'error'); }
+      },
+    });
+  });
 
   $$('[data-open-folder]', body).forEach(b => b.onclick = () =>
     apiPost('/api/instance/open-folder', { id: b.dataset.openFolder, kind: b.dataset.folder })

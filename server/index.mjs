@@ -24,8 +24,9 @@ import {
   KINDS, listInstances, getInstance, createInstance, updateInstance, deleteInstance,
   duplicateInstance, listContents, toggleContent, deleteContent, importContent, ensureInstanceDirs,
   mrSearch, mrVersions, mrInstall, installMrpack, materializeMrpack, materializeZipPack,
-  instanceDir, installCfpaMod, cfpaStatus, mrProject,
+  instanceDir, installCfpaMod, cfpaStatus, mrProject, autoInstallMissingDeps,
 } from './content.mjs';
+import { checkInstanceDeps } from './deps.mjs';
 import { translateQuery, cnName, buildLinks, mcmodSearchUrl, MOD_CN, CFPA_MODS } from './i18n.mjs';
 import { translateText } from './translate.mjs';
 import { buildIndex, indexStatus, fuzzyLookup } from './search.mjs';
@@ -241,6 +242,14 @@ async function doLaunch(instanceId) {
       const source = cfg.source || 'auto';
       tstage(task, '检查游戏文件', 1);
       await ensureVersionReady(inst.versionId, task, source);
+
+      // 启动前把前置补上 —— 缺前置的话游戏起来就是一屏
+      // "Missing or unsupported mandatory dependencies"，与其让用户对着
+      // 崩溃日志发愣，不如在这里先解决。检测是纯本地读，有缓存，很快。
+      tstage(task, '核对前置模组', 1);
+      await autoInstallMissingDeps(inst.id, {
+        task, mcVersion: inst.version, loader: inst.loader,
+      }).catch(e => { tlog(task, '前置检查失败（不影响启动）: ' + e.message); });
 
       tstage(task, '检测 Java', 1);
       const inst0 = inst;
@@ -1725,6 +1734,40 @@ async function handleApi(req, res, url) {
         const r = await mrInstall(instance, kind || 'mod', project, {
           versionId, mcVersion, loader, withDeps: withDeps !== false, task,
         });
+        // Modrinth 的依赖元数据不一定写全（「精妙背包 × 机械动力 集成」就没把 create
+        // 标成必需），装完再按 jar 里的真实声明对一次账，缺的当场补。
+        let deps = null;
+        if ((kind || 'mod') === 'mod') {
+          tstage(task, '核对前置模组', 1);
+          deps = await autoInstallMissingDeps(instance, { task, mcVersion, loader }).catch(() => null);
+        }
+        tdone(task, { ...r, deps });
+      } catch (e) { tfail(task, e); }
+    })();
+    return ok(res, { task: taskPublic(task) });
+  }
+
+  /* ---- 前置依赖检查 / 一键补齐 ---- */
+  if (p === '/api/content/deps') {
+    const inst = q.get('instance');
+    if (!inst) return fail(res, '缺少 instance');
+    try { return ok(res, await checkInstanceDeps(inst)); }
+    catch (e) { return fail(res, e); }
+  }
+  if (p === '/api/content/deps/fix' && req.method === 'POST') {
+    const instId = body.instance;
+    if (!instId) return fail(res, '缺少 instance');
+    const inst = await getInstance(instId);
+    if (!inst) return fail(res, '实例不存在');
+    const task = createTask('download', `补齐 ${inst.name} 的前置模组`, {
+      retrySpec: { api: '/api/content/deps/fix', body },
+    });
+    (async () => {
+      try {
+        const r = await autoInstallMissingDeps(instId, {
+          task, mcVersion: inst.version, loader: inst.loader,
+        });
+        if (r.failed.length) tlog(task, `以下前置需要手动处理：${r.failed.map(f => `${f.modId}（${f.reason}）`).join('；')}`);
         tdone(task, r);
       } catch (e) { tfail(task, e); }
     })();

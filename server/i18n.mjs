@@ -531,9 +531,9 @@ export const MOD_CN = {
 
   // ---- Sophisticated 系列 ----
   'sophisticated-core': 'Sophisticated 核心库',
-  'sophisticated-core-unofficial-fabric-port': 'Sophisticated 核心库（Fabric 移植）',
-  'sophisticated-backpacks-unoffical-fabric-port': 'Sophisticated 背包（Fabric 移植）',
-  'sophisticated-storage-unofficial-fabric-port': 'Sophisticated 存储（Fabric 移植）',
+  'sophisticated-core-unofficial-fabric-port': '精致核心库（非官方 Fabric 移植）',
+  'sophisticated-backpacks-unoffical-fabric-port': '精致背包（非官方 Fabric 移植）',
+  'sophisticated-storage-unofficial-fabric-port': '精致存储（非官方 Fabric 移植）',
   'sophisticated-storage': 'Sophisticated 存储',
 
   // ---- 杂项与兼容 ----
@@ -903,6 +903,42 @@ const WORD_CN = {
   bag: '袋子', bags: '袋子', case: '箱子', cases: '箱子',
   // 知名内容模组的品牌词，作为单词出现在标题里时也翻
   sodium: '钠', pixelmon: '像素宝可梦', botania: '植物魔法',
+  // create / sophisticated 在中文社区有固定译名，按普通词翻
+  create: '机械动力', sophisticated: '精致', tactical: '战术',
+  easier: '简易', easiest: '最简', simplest: '最简', harder: '困难',
+  compat: '兼容', compatability: '兼容', compatibility_: '兼容',
+  traveler: '旅行者', travelers: '旅行者', nomad: '游牧',
+  wanderer: '流浪者', wanderers: '流浪者', explorer: '探险家', explorers: '探险家',
+  // 第四批：按真实搜索结果统计补的高频词根
+  hud: '界面', skin: '皮肤', skins: '皮肤', transport: '运输',
+  farmer: '农夫', series: '系列', port: '移植版',
+  unofficial: '非官方', unoffical: '非官方', craftable: '可合成',
+  medieval: '中世纪', adventurer: '冒险者', adventurers: '冒险者',
+  nuclear: '核能', horse: '马', custom: '自定义', configurable: '可配置',
+  keep: '保留', keeper: '守护者', keepers: '守护者', fallen: '堕落',
+  wizard: '巫师', wizards: '巫师', paladin: '圣骑士', priest: '祭司',
+  primal: '原始', magicka: '魔法', magick: '魔法', magica: '魔法',
+  deco: '装饰', copycat: '仿制品', copycats: '仿制品', slice: '切片',
+  dice: '骰子', interior: '内饰', interiors: '内饰', jetpack: '喷气背包',
+  goggles: '护目镜', framed: '镶框', contraption: '装置', contraptions: '装置',
+  terminal: '终端', terminals: '终端', encased: '封装', design: '设计',
+  dreams: '梦想', desires: '渴望', steam: '蒸汽',
+  culling: '剔除', cull: '剔除', motion: '运动', requestify: '请求',
+  refined: '精炼', shell: '外壳', shells: '外壳',
+  color: '颜色', colors: '颜色', wearable: '可穿戴',
+  tab: '标签页', dev: '开发版', elemental: '元素', metal: '金属',
+  metals: '金属', alloy: '合金', dragonsteel: '龙钢', smith: '铁匠',
+  template: '模板', templates: '模板', hotbar: '快捷栏',
+  ping: '延迟', frame: '帧', radius: '半径', range: '范围', scale: '缩放',
+  size: '大小', icon: '图标', icons: '图标', theme: '主题', themes: '主题',
+  font: '字体', fonts: '字体', mode: '模式', modes: '模式',
+  preset: '预设', presets: '预设', group: '分组', groups: '分组',
+  category: '分类', categories: '分类', filter: '过滤', search: '搜索',
+  sort: '排序', notify: '通知', alert: '警报', warning: '警告',
+  repair: '修理', spawner: '刷怪笼', spawners: '刷怪笼', raid: '袭击',
+  invasion: '入侵', mission: '任务', missions: '任务', objective: '目标',
+  guild: '公会', guilds: '公会', clan: '氏族', clans: '氏族',
+  merchant: '商人',
   addition: '附加', additions: '附加', generations: '世代', legacy: '传承版',
   chronicles: '编年史', origins: '起源', odyssey: '远征', expedition: '远征',
   adventure: '冒险', adventures: '冒险', journey: '旅程', journeys: '旅程',
@@ -919,11 +955,37 @@ const FUNC_WORDS = new Set(['and', 'or', 'of', 'the', 'a', 'an', 'for', 'with',
  * 「Create Big Cannons」里只有 Big / Cannons 是真需要翻译的部分，
  * 把 Create 算进分母会把它拉到 33%，直接判死。
  */
-const BRAND_WORDS = new Set(['create', 'cobblemon', 'yungs', 'yung', 'macaws',
-  'macaw', 'alexs', 'alex', 'sophisticated', 'lets', 'let', 'do', 'pams',
-  'abnormals', 'abnormalscore', 'fabric', 'forge', 'neoforge', 'quilt', 'minecraft']);
+const BRAND_WORDS = new Set(['cobblemon', 'yungs', 'yung', 'macaws', 'macaw',
+  'alexs', 'alex', 'lets', 'let', 'do', 'pams', 'abnormals', 'abnormalscore',
+  'fabric', 'forge', 'neoforge', 'quilt', 'minecraft']);
+// 注意 'create' 和 'sophisticated' 不在这里 —— 它们在中文社区有固定译名
+// （机械动力 / 精致），按普通词翻，否则「精妙背包×机械动力集成」会显示成
+// 「sophisticated-背包-create-集成」，用户根本看不出它跟机械动力有关。
 
-const SPLIT_RE = /(\s+|[:：\-–—&/|,，、()（）[\]"'’]+)/;
+const SPLIT_RE = /(\s+|[:：\-–—&/|,，、()（）[\]"“”]+)/;
+
+/**
+ * 查一个词的中文。
+ * 模组标题里同一个词有各种变形：所有格（Traveler's）、复数（Backpacks）、
+ * 带标点（Backpacks!）—— 逐个变体试一遍，命中率能差出一大截。
+ */
+function lookupWord(raw) {
+  const low = raw.toLowerCase();
+  const cands = [
+    low,
+    low.replace(/['’]s$/, ''),        // traveler's → traveler
+    low.replace(/['’]/g, ''),         // 各种残留撇号
+    low.replace(/ies$/, 'y'),         // fairies → fairy
+    low.replace(/es$/, ''),           // boxes → box
+    low.replace(/s$/, ''),            // backpacks → backpack
+    low + 's',                        // mob → mobs
+  ];
+  for (const c of cands) if (c && WORD_CN[c]) return { cn: WORD_CN[c], key: c };
+  return null;
+}
+
+/** 剥掉词首尾的标点，保留词干（Backpacks! → Backpacks） */
+const trimPunct = (s) => s.replace(/^[^A-Za-z0-9\u4e00-\u9fa5]+|[^A-Za-z0-9\u4e00-\u9fa5]+$/g, '');
 
 /** 标题里允许原样保留的前缀标签，如 `[ETF]`、`[TaCZ]` */
 const TAG_RE = /^(\[[^\]]{1,14}\])\s*/;
@@ -948,18 +1010,20 @@ function wordTranslate(title) {
   for (const p of parts) {
     if (!p) continue;
     if (SPLIT_RE.test(p)) { out.push(p); SPLIT_RE.lastIndex = 0; continue; }
-    const low = p.toLowerCase();
+    const body = trimPunct(p);                 // Backpacks! → Backpacks
+    const low = body.toLowerCase();
+    if (!low) { out.push(p); continue; }
     if (FUNC_WORDS.has(low)) { out.push(WORD_CN[low] ?? p); continue; }
     // 纯数字 / 符号原样保留，不计入统计
     if (!/[a-z\u4e00-\u9fa5]/i.test(low)) { out.push(p); continue; }
     // 已经是中文（国产模组标题）直接算命中
-    if (/[\u4e00-\u9fa5]/.test(p)) { substantive++; hit++; out.push(p); continue; }
+    if (/[\u4e00-\u9fa5]/.test(body)) { substantive++; hit++; out.push(p); continue; }
     // 系列品牌词：保留原文，不进分母
     if (BRAND_WORDS.has(low)) { out.push(p); continue; }
     substantive++;
+    const found = lookupWord(low);
     // 词表里映射到英文自身的（ui→UI）不算命中，否则「OPAC-UI」会被判成 50% 全中
-    const mapped = WORD_CN[low];
-    if (mapped && mapped !== p) { hit++; out.push(mapped); }
+    if (found && found.cn !== body && found.cn !== low) { hit++; out.push(found.cn); }
     else out.push(p);
   }
 
@@ -976,6 +1040,12 @@ function wordTranslate(title) {
     .replace(/([\u4e00-\u9fa5])\s+(?=[\u4e00-\u9fa5])/g, '$1')
     // 两侧都是中文时，& 读作「与」
     .replace(/([\u4e00-\u9fa5])\s*&\s*(?=[\u4e00-\u9fa5])/g, '$1与')
+    // 紧贴的连字符是 slug 分隔符，中文之间不需要它：
+    // 「精致-背包-机械动力-集成」→「精致背包机械动力集成」
+    // 带空格的 ` - ` 是分句用的，保留
+    .replace(/([\u4e00-\u9fa5])[-–—](?=[\u4e00-\u9fa5])/g, '$1')
+    // 中文标点后不留空格：`机械动力: 仿制品` → `机械动力：仿制品`
+    .replace(/(?<=[\u4e00-\u9fa5])[\s]*[:：][\s]*(?=[\u4e00-\u9fa5])/g, '：')
     .trim();
   if (!text || text === src) { _wordCache.set(src, null); return null; }
   // 至少得有一个汉字：「L2 库」这种也算（实词命中率已经把关过了）

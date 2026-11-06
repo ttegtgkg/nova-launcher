@@ -1525,3 +1525,42 @@ html[data-wallpaper="off"] .wallpaper { display: none; }
 
 /* 翻页请求期间轻微压暗，避免误以为点了没反应 */
 #storeResults.is-loading { opacity: .5; transition: opacity .15s ease; pointer-events: none; }
+
+/* ------------------------------------------------ 前置缺失警告 */
+.deps-warn {
+  margin: 0 0 14px;
+  padding: 13px 16px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
+}
+.deps-warn .dw-head {
+  font-size: 12.5px;
+  font-weight: 620;
+  color: var(--warn);
+  margin-bottom: 8px;
+}
+.deps-warn .dw-list {
+  margin: 0 0 12px;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.75;
+  color: var(--text-dim);
+}
+.deps-warn .dw-list li { margin-bottom: 2px; }
+.deps-warn .dw-list b { color: var(--text); font-weight: 620; }
+.deps-warn .muted { color: var(--text-mute); }
+
+/* 警告条里可点击的「卸载这个模组」 */
+.dw-del {
+  font-family: inherit;
+  font-size: 11.5px;
+  color: var(--danger);
+  background: transparent;
+  border: none;
+  border-bottom: 1px dashed color-mix(in srgb, var(--danger) 55%, transparent);
+  padding: 0 1px;
+  cursor: pointer;
+  transition: opacity .15s;
+}
+.dw-del:hover { opacity: .75; }
