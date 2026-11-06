@@ -1895,7 +1895,8 @@ async function handleApi(req, res, url) {
         await writeSource(inst.id, kind, path.basename(dest), {
           slug: body.slug || null,
           title: body.title || null,
-          cn: null,
+          // CurseForge 自己不给中文名，用同一份词典按 slug / 标题查
+          cn: cnName(body.slug || '') || cnName(body.title || '') || body.cn || null,
           sourceUrl: body.websiteUrl || null,
           sourceKind: 'curseforge',
           modId: String(body.modId || ''),

@@ -939,6 +939,14 @@ const WORD_CN = {
   invasion: '入侵', mission: '任务', missions: '任务', objective: '目标',
   guild: '公会', guilds: '公会', clan: '氏族', clans: '氏族',
   merchant: '商人',
+  // 第五批：CF 长尾（JEI 附属系列、地图类等）
+  resource: '资源', resources: '资源', professional: '职业', professions: '职业',
+  archaeology: '考古', antique: '古董', atlas: '地图集', surveyor: '勘测员',
+  framework: '框架', mapper: '制图', distraction: '干扰', ponder: '思索',
+  extras: '附加', integration_: '集成', multiblocks: '多方块', trims: '盔甲纹饰',
+  trim: '纹饰', hider: '隐藏器', index: '索引', catalog: '目录',
+  cosmetic: '装饰', cosmetics: '装饰', emote: '表情', emotes: '表情',
+  wallet: '钱包', banking: '银行', auction: '拍卖', bazaar: '集市',
   addition: '附加', additions: '附加', generations: '世代', legacy: '传承版',
   chronicles: '编年史', origins: '起源', odyssey: '远征', expedition: '远征',
   adventure: '冒险', adventures: '冒险', journey: '旅程', journeys: '旅程',
@@ -963,6 +971,31 @@ const BRAND_WORDS = new Set(['cobblemon', 'yungs', 'yung', 'macaws', 'macaw',
 // 「sophisticated-背包-create-集成」，用户根本看不出它跟机械动力有关。
 
 const SPLIT_RE = /(\s+|[:：\-–—&/|,，、()（）[\]"“”]+)/;
+
+/**
+ * 常见词组：逐词翻会得到很怪的结果，整段替换掉再走逐词逻辑。
+ * 「Just Enough Xxx」是 JEI 一整个系列的命名法（JER / JEP / JEBr …），
+ * CurseForge 上尤其多，单靠词表覆盖不了。
+ */
+const PHRASES = [
+  [/^just enough\b/i, '足够多的'],
+  [/\bjust enough\b/gi, '足够多的'],
+  [/\bantique atlas\b/gi, '古董地图集'],
+  [/\bthird person\b/gi, '第三人称'],
+  [/\bfirst person\b/gi, '第一人称'],
+  [/\bworld ?gen(?:eration)?\b/gi, '世界生成'],
+  [/\bone block\b/gi, '单方块'],
+  [/\bquality of life\b/gi, '生活品质'],
+  [/\bmulti ?blocks?\b/gi, '多方块'],
+  [/\bbase\b/gi, '基础'],
+];
+
+/** 把 title 里的常见词组先换掉 */
+function applyPhrases(text) {
+  let out = String(text || '');
+  for (const [re, rep] of PHRASES) out = out.replace(re, rep);
+  return out;
+}
 
 /**
  * 查一个词的中文。
@@ -1001,6 +1034,7 @@ function wordTranslate(title) {
   let body = src;
   const tag = TAG_RE.exec(body);
   if (tag) { prefix = tag[1] + ' '; body = body.slice(tag[0].length); }
+  body = applyPhrases(body);          // 「Just Enough Xxx」这类整段换掉
 
   const parts = body.split(SPLIT_RE);
   let hit = 0;          // 实词命中数

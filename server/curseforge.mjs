@@ -8,6 +8,7 @@
 // 另一个现实约束：作者可以在项目设置里关闭「第三方下载」，
 // 这类文件 API 返回的 downloadUrl 会是 null —— 这时只能跳网页下载，不能直连。
 import { httpGet } from './core.mjs';
+import { cnName } from './i18n.mjs';
 
 const BASE = 'https://api.curseforge.com/v1';
 const GAME_ID = 432;               // Minecraft
@@ -46,12 +47,18 @@ async function cfGet(apiKey, path, query = null) {
 /** 把 CurseForge 的搜索结果转成和 Modrinth 一致的形状，方便前端复用 */
 function toHit(m) {
   const links = m.links || {};
+  const slug = String(m.slug || m.id);
+  // CurseForge 不提供中文名，但中文名词典是按 slug / 标题建的，
+  // 两个平台的热门模组高度重合，直接查同一份词典就能覆盖大部分。
+  // slug 优先（更精确），标题兜底（CF 的 slug 有时是 `just-enough-items`，
+  // 而词典里记的是 `jei`，这时靠标题里的括号缩写命中）。
+  const cn = cnName(slug) || cnName(m.name) || null;
   return {
     id: String(m.id),
-    slug: String(m.slug || m.id),
+    slug,
     title: m.name,
     description: m.summary || '',
-    cn: null,
+    cn,
     author: (m.authors && m.authors[0] && m.authors[0].name) || '',
     downloads: m.downloadCount || 0,
     follows: m.thumbsUpCount || 0,
@@ -94,11 +101,12 @@ export async function cfProject(apiKey, modId) {
   const data = await cfGet(apiKey, '/mods/' + encodeURIComponent(modId));
   const m = data.data || {};
   const links = m.links || {};
+  const slug = String(m.slug || m.id);
   return {
     id: String(m.id),
-    slug: String(m.slug || m.id),
+    slug,
     title: m.name,
-    cn: null,
+    cn: cnName(slug) || cnName(m.name) || null,
     description: m.summary || '',
     cnDescription: null,
     body: '',
