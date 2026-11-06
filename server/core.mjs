@@ -9,6 +9,7 @@ import https from 'node:https';
 import httpMod from 'node:http';
 import dns from 'node:dns';
 import { fileURLToPath } from 'node:url';
+import { isEncrypted, protectSecret, unprotectSecret, maskSecret } from './secure.mjs';
 
 // 部分网络环境下 IPv6 不通但 DNS 会返回 AAAA，优先 IPv4 避免连接卡死
 try { dns.setDefaultResultOrder('ipv4first'); } catch { }
@@ -93,14 +94,53 @@ export const DEFAULTS = {
   },
 };
 
+/**
+ * 需要加密落盘的字段。
+ * 读写都在这一层统一处理，业务代码拿到的永远是明文，
+ * 但 config.json 里躺着的永远是密文。
+ */
+const SECRET_FIELDS = ['curseforgeApiKey'];
+
 export async function loadConfig() {
   const c = await readJson(CONFIG_FILE, {}) || {};
-  return {
+  const merged = {
     ...DEFAULTS, ...c,
     memory: { ...DEFAULTS.memory, ...(c.memory || {}) },
     wallpaper: { ...DEFAULTS.wallpaper, ...(c.wallpaper || {}) },
   };
+
+  // 解密。secure.mjs 内部对「密文 → 明文」有缓存，只有第一次要起 PowerShell。
+  let legacyPlain = null;
+  for (const f of SECRET_FIELDS) {
+    const raw = c[f];
+    if (!raw) continue;
+    if (isEncrypted(raw)) merged[f] = await unprotectSecret(raw);
+    else if (typeof raw === 'string' && raw) legacyPlain = f;   // 老配置里的明文
+  }
+  // 老版本存的是明文 → 静默加密迁移一次，之后 config.json 里就看不到原文了
+  if (legacyPlain) migrateSecrets(c).catch(() => { });
+
+  return merged;
 }
+
+let _migrating = false;
+async function migrateSecrets(rawConfig) {
+  if (_migrating) return;
+  _migrating = true;
+  try {
+    const out = { ...rawConfig };
+    for (const f of SECRET_FIELDS) {
+      const raw = out[f];
+      if (typeof raw === 'string' && raw && !isEncrypted(raw)) {
+        out[f] = await protectSecret(raw);
+      }
+    }
+    await writeJson(CONFIG_FILE, out);
+  } finally {
+    _migrating = false;
+  }
+}
+
 export async function saveConfig(patch) {
   const cur = await loadConfig();
   const next = {
@@ -108,8 +148,22 @@ export async function saveConfig(patch) {
     memory: { ...cur.memory, ...(patch.memory || {}) },
     wallpaper: { ...cur.wallpaper, ...(patch.wallpaper || {}) },
   };
-  await writeJson(CONFIG_FILE, next);
+  // 写盘前把敏感字段换成密文；返回给调用方的仍是明文，业务代码无感
+  const onDisk = { ...next };
+  for (const f of SECRET_FIELDS) {
+    if (onDisk[f]) onDisk[f] = await protectSecret(onDisk[f]);
+  }
+  await writeJson(CONFIG_FILE, onDisk);
   return next;
+}
+
+/** 给前端看的配置：敏感字段一律打码，明文不出后端 */
+export function redactConfig(cfg) {
+  const out = { ...cfg };
+  for (const f of SECRET_FIELDS) {
+    if (out[f]) { out[f] = maskSecret(out[f]); out[`${f}Masked`] = true; }
+  }
+  return out;
 }
 
 /* --------------------------------------------------------- 任务队列/进度 */

@@ -14,27 +14,52 @@ const el = (tag, cls, html) => {
 };
 
 /* ------------------------------------------------------------ API */
+/*
+ * 本地服务加了令牌校验：别的程序扫到 127.0.0.1:7420 也没法调我们的 API。
+ * 令牌由桌面外壳生成，经 URL 参数 ?t= 带进来，落地到 sessionStorage 后
+ * 立刻从地址栏抹掉（避免被截图/历史记录带走）。
+ */
+const NOVA_TOKEN = (() => {
+  try {
+    const qs = new URLSearchParams(location.search);
+    const fromUrl = qs.get('t');
+    if (fromUrl) {
+      sessionStorage.setItem('nova.token', fromUrl);
+      qs.delete('t');
+      const rest = qs.toString();
+      history.replaceState(null, '', location.pathname + (rest ? '?' + rest : '') + location.hash);
+      return fromUrl;
+    }
+    return sessionStorage.getItem('nova.token') || '';
+  } catch { return ''; }
+})();
+
+/** 给请求补上令牌头 */
+function withToken(init = {}) {
+  if (!NOVA_TOKEN) return init;
+  return { ...init, headers: { ...(init.headers || {}), 'X-Nova-Token': NOVA_TOKEN } };
+}
 
 async function apiGet(url) {
-  const r = await fetch(url);
+  const r = await fetch(url, withToken());
   const j = await r.json().catch(() => ({ ok: false, error: '响应解析失败' }));
   if (!j.ok) throw new Error(j.error || '请求失败');
   return j;
 }
 async function apiPost(url, body) {
-  const r = await fetch(url, {
+  const r = await fetch(url, withToken({
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}),
-  });
+  }));
   const j = await r.json().catch(() => ({ ok: false, error: '响应解析失败' }));
   if (!j.ok) throw new Error(j.error || '请求失败');
   return j;
 }
 function apiUpload(url, file) {
-  return fetch(url, {
+  return fetch(url, withToken({
     method: 'POST',
     headers: { 'X-Filename': encodeURIComponent(file.name) },
     body: file,
-  }).then(r => r.json()).then(j => { if (!j.ok) throw new Error(j.error); return j; });
+  })).then(r => r.json()).then(j => { if (!j.ok) throw new Error(j.error); return j; });
 }
 
 /* ------------------------------------------------------------ 状态 */

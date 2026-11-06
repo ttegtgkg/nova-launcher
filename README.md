@@ -559,6 +559,7 @@ nova-launcher/
 ├── 启动.bat                  启动入口（双击这个）
 ├── package.json
 ├── 开源归属与致谢.md          ← 第三方归属声明（必读）
+├── docs/API.md                ← 完整 API 文档（写脚本 / 二次开发时看）
 ├── README.md
 ├── server/                   后端（Node 原生，无依赖）
 │   ├── index.mjs             HTTP 服务 + 全部 API + 游戏进程管理
@@ -567,6 +568,8 @@ nova-launcher/
 │   ├── content.mjs           实例与内容管理 + Modrinth + 整合包
 │   ├── theme.mjs             自定义主题解析 + 壁纸管理
 │   ├── backup.mjs            数据快照（每日自动备份 / 恢复）
+│   ├── deps.mjs              前置依赖扫描（读 jar 内真实声明）
+│   ├── secure.mjs            敏感信息加密（DPAPI / AES-GCM）
 │   └── nbt.mjs               NBT 读写（存档 level.dat）
 ├── web/                      前端（纯手写 HTML/CSS/JS，无框架无 CDN）
 │   ├── index.html

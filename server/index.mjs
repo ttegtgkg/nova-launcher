@@ -9,7 +9,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
   ROOT, DATA, SHARED, INSTANCES, RUNTIME, CACHE, P, ensureDirs, loadConfig, saveConfig,
-  createTask, taskPublic, listTasks, getTask, tlog, tstage, tprogress, tdone, tfail,
+  createTask, taskPublic, listTasks, getTask, tlog, tstage, tprogress, tdone, tfail, redactConfig,
   cancelTask, getHistory, clearHistory, taddFile,
   httpText, readJson, writeJson, existsSync, exists, downloadOne, totalMemoryMb, freeMemoryMb,
   dirSize, safeName, offlineUuid, httpBinary, zipCreate, collectDirEntries, zipExtractAll, zipEntries, zipRead,
@@ -27,6 +27,7 @@ import {
   instanceDir, installCfpaMod, cfpaStatus, mrProject, autoInstallMissingDeps,
 } from './content.mjs';
 import { checkInstanceDeps } from './deps.mjs';
+import { cryptoStatus } from './secure.mjs';
 import { translateQuery, cnName, buildLinks, mcmodSearchUrl, MOD_CN, CFPA_MODS } from './i18n.mjs';
 import { translateText } from './translate.mjs';
 import { buildIndex, indexStatus, fuzzyLookup } from './search.mjs';
@@ -46,6 +47,35 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const WEB = path.join(ROOT, 'web');
 const PORT = Number(process.env.NOVA_PORT || 7420);
 const HOST = '127.0.0.1';
+
+/* ------------------------------------------------------------ 接口鉴权 */
+/*
+ * 本地 HTTP 服务默认谁都能访问：任何扫到 127.0.0.1:7420 的程序，
+ * 或者被诱导的浏览器页面（DNS rebinding），都能直接调 /api/*。
+ *
+ * 这里加两道闸：
+ *   1. **令牌**：桌面外壳启动时生成随机令牌，经环境变量传进来，
+ *      再以 ?t= 带给前端；前端之后每个请求都带 X-Nova-Token。
+ *      令牌只存在进程内存里，不落盘。
+ *   2. **Host 校验**：只接受 127.0.0.1 / localhost 的 Host 头，
+ *      挡掉 DNS rebinding（攻击者域名解析到 127.0.0.1 后 Host 仍是他的域名）。
+ *
+ * 浏览器模式（用户手动开 http://127.0.0.1:7420）没有外壳给的令牌，
+ * 那就自己生成一个并打印到控制台，用户照着带参数的地址访问即可。
+ */
+const TOKEN = process.env.NOVA_TOKEN
+  || crypto.randomBytes(18).toString('hex');
+const TOKEN_FROM_SHELL = !!process.env.NOVA_TOKEN;
+
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]', '::1']);
+
+/** Host 头必须是本机回环地址 */
+function hostOk(req) {
+  const h = String(req.headers.host || '');
+  if (!h) return true;                       // HTTP/1.0 无 Host，交给令牌拦
+  const name = h.replace(/:\d+$/, '').toLowerCase();
+  return LOOPBACK_HOSTS.has(name);
+}
 
 /* ------------------------------------------------------------ 运行时状态 */
 
@@ -489,6 +519,15 @@ async function cleanOrphanJava() {
 async function handleApi(req, res, url) {
   const p = url.pathname;
   const q = url.searchParams;
+
+  // 鉴权：令牌不匹配就拒绝。健康检查类路由放行，方便排查端口问题。
+  if (p !== '/api/ping') {
+    const got = String(req.headers['x-nova-token'] || '');
+    if (got !== TOKEN) {
+      return json(res, 401, { ok: false, error: '未授权的请求（缺少或错误的 X-Nova-Token）' });
+    }
+  }
+
   // 这几个路由的 body 是原始二进制/文件流，绝不能被 JSON 预读吃掉。
   // 它们需要的参数一律走 query string。
   const BINARY_ROUTES = ['/api/content/upload', '/api/pack/upload', '/api/saves/import', '/api/import/auto',
@@ -499,6 +538,9 @@ async function handleApi(req, res, url) {
     : {};
 
   /* ---- 系统 ---- */
+  if (p === '/api/ping') {
+    return ok(res, { alive: true, port: PORT, shell: TOKEN_FROM_SHELL });
+  }
   if (p === '/api/status') {
     const cfg = await loadConfig();
     const javas = await getJavas();
@@ -513,8 +555,19 @@ async function handleApi(req, res, url) {
     });
   }
   if (p === '/api/config') {
-    if (req.method === 'POST') return ok(res, { config: await saveConfig(body) });
-    return ok(res, { config: await loadConfig() });
+    if (req.method === 'POST') {
+      // 前端拿到的是打码值；用户没动它就别用打码串覆盖真实 Key
+      const patch = { ...body };
+      if (typeof patch.curseforgeApiKey === 'string' && patch.curseforgeApiKey.includes('••')) {
+        delete patch.curseforgeApiKey;
+      }
+      const saved = await saveConfig(patch);
+      return ok(res, { config: redactConfig(saved) });
+    }
+    return ok(res, { config: redactConfig(await loadConfig()) });
+  }
+  if (p === '/api/config/crypto') {
+    return ok(res, await cryptoStatus());
   }
   if (p === '/api/tasks') return ok(res, { tasks: listTasks() });
 
@@ -1979,6 +2032,12 @@ async function handleApi(req, res, url) {
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${HOST}:${PORT}`);
   try {
+    // 先挡 DNS rebinding：如果 Host 不是本机回环，说明请求是被某个域名
+    // 解析到 127.0.0.1 带过来的，直接拒掉。
+    if (!hostOk(req)) {
+      res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+      return res.end('Host 不被允许');
+    }
     if (url.pathname.startsWith('/api/')) {
       await handleApi(req, res, url);
     } else {
@@ -2000,12 +2059,18 @@ async function main() {
     console.log(line);
     console.log(`  数据目录: ${DATA}`);
     console.log(`  物理内存: ${totalMemoryMb()} MB | CPU 核心: ${os.cpus().length}`);
+    if (!TOKEN_FROM_SHELL) {
+      // 浏览器模式：外壳没给令牌，这里打出来，用户照着带参数的地址访问
+      console.log(`  本次会话令牌: ${TOKEN}`);
+      console.log(`  请用这个地址打开: http://${HOST}:${PORT}/?t=${TOKEN}`);
+    }
     console.log('─'.repeat(52) + '\n');
     // 每日自动数据快照：后台悄悄跑，失败不影响使用
     setTimeout(() => { autoBackupIfDue().catch(() => { }); }, 6000);
     if (process.env.NOVA_NO_OPEN !== '1') {
       setTimeout(() => {
-        spawn('cmd', ['/c', 'start', '', `http://${HOST}:${PORT}`], { detached: true, stdio: 'ignore', windowsHide: true })
+        spawn('cmd', ['/c', 'start', '', `http://${HOST}:${PORT}/?t=${TOKEN}`],
+          { detached: true, stdio: 'ignore', windowsHide: true })
           .on('error', () => { }).unref();
       }, 400);
     }

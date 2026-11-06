@@ -84,6 +84,8 @@ namespace NovaShell
         private readonly string _dataDir;
         private readonly bool _devMode;
         private int _port = Cfg.DefaultPort;
+        // 本地接口令牌：每次启动重新生成，只经环境变量与 URL 传递，不落盘
+        private readonly string _token = Guid.NewGuid().ToString("N");
         private bool _ready;
 
         public ShellForm(string[] args)
@@ -179,7 +181,7 @@ namespace NovaShell
         {
             try
             {
-                string url = "http://127.0.0.1:" + _port + "/";
+                string url = "http://127.0.0.1:" + _port + "/?t=" + _token;
 
                 if (!_devMode && !IsPortOpen(_port))
                 {
@@ -230,6 +232,7 @@ namespace NovaShell
             // 外壳负责开窗口，别再让服务自己弹浏览器
             psi.EnvironmentVariables["NOVA_NO_OPEN"] = "1";
             psi.EnvironmentVariables["NOVA_PORT"] = _port.ToString();
+            psi.EnvironmentVariables["NOVA_TOKEN"] = _token;
             try { psi.EnvironmentVariables["NOVA_DATA_DIR"] = _dataDir; } catch { }
 
             try
