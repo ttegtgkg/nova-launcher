@@ -1579,8 +1579,7 @@ html[data-wallpaper="off"] .wallpaper { display: none; }
 .deps-warn .muted { color: var(--text-mute); }
 
 /* 警告条里可点击的「卸载这个模组」 */
-.dw-del {
-  font-family: inherit;
+.dw-del {  font-family: inherit;
   font-size: 11.5px;
   color: var(--danger);
   background: transparent;
@@ -1591,3 +1590,46 @@ html[data-wallpaper="off"] .wallpaper { display: none; }
   transition: opacity .15s;
 }
 .dw-del:hover { opacity: .75; }
+/* ------------------------------------------------ 双源搜索来源标识 */
+.src-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .3px;
+  line-height: 15px;
+  vertical-align: middle;
+  border: 1px solid transparent;
+}
+.src-badge.modrinth {
+  color: var(--accent-2);
+  background: var(--accent-2-soft);
+  border-color: var(--accent-2-line);
+}
+.src-badge.curseforge {
+  color: #f59e0b;
+  background: color-mix(in srgb, #f59e0b 14%, transparent);
+  border-color: color-mix(in srgb, #f59e0b 34%, transparent);
+}
+.src-also {
+  margin-left: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-mute);
+  vertical-align: middle;
+}
+
+.src-tips { display: inline-flex; gap: 8px; margin-left: 10px; }
+.src-tip {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--text-mute);
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--card);
+  border: 1px solid var(--stroke);
+}
+.src-tip b { color: var(--text-dim); font-weight: 620; }
+.src-tip.off { opacity: .55; }

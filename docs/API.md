@@ -100,6 +100,7 @@ CurseForge 的 API Key 属于敏感信息，**不会明文落盘**：
   "source": "auto|mirror|official",     // 游戏文件下载源
   "downloadConcurrency": 12,            // 并发下载数
   "multiLink": true,                    // 多链路下载（官方与镜像错峰竞速）
+  "chunked": false,                    // 双源分段并发（8MB+ 文件，实验性）
   "javaPath": "auto",
   "jvmPreset": "aikar|memsave|smooth|vanilla",
   "autoOptimize": true,                 // 启动时自动内存优化
@@ -202,7 +203,47 @@ CurseForge 的 API Key 属于敏感信息，**不会明文落盘**：
 
 ---
 
-### 3.6 Modrinth 内容
+### 3.6 内容搜索
+
+**双源同时搜索（推荐）** —— Modrinth 和 CurseForge 一起查，合并成一份结果：
+
+| 方法 | 路径 | 参数 |
+|---|---|---|
+| GET | `/api/search/all` | `query` `kind` `mcVersion` `loader` `offset` `limit` |
+
+返回：
+
+```jsonc
+{
+  "ok": true,
+  "hits": [
+    {
+      "title": "Sodium", "id": "AANobbMI", "sourceKind": "modrinth",
+      "downloads": 248980000, "cn": "钠", …,
+      "alsoOn": ["curseforge"]        // 两边都有时会标出来
+    }
+  ],
+  "total": 18511,                     // 两源命中数之和
+  "sources": [                        // 每个源的状态，某个源挂了不影响另一个
+    { "id": "modrinth",  "label": "Modrinth",  "ok": true, "total": 8511, "error": null },
+    { "id": "curseforge","label": "CurseForge","ok": true, "total": 10000, "error": null }
+  ],
+  "queryInfo": { … }                  // 中文检索词转换信息
+}
+```
+
+排序规则：先按「和关键词的匹配程度」分层（完全一致 > 前缀 > 包含 > 其他），
+同层内**按来源交错**。不比下载量，因为两个平台的统计口径不同（CF 累计量普遍高一个数量级），
+直接比会让一边把另一边全挤下去。
+
+单源搜索：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/mr/search` | 只查 Modrinth，参数同上 |
+| GET | `/api/cf/search` | 只查 CurseForge，参数同上，需要 API Key |
+
+### 3.6.1 Modrinth 项目
 
 | 方法 | 路径 | 参数 | 说明 |
 |---|---|---|---|

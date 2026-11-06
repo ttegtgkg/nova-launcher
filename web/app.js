@@ -1205,7 +1205,7 @@ function contentItemHtml(it, kind) {
 const STORE = {
   kind: 'mod', hits: [], queryInfo: null, total: 0, type: 'search',
   source: 'modrinth', relaxed: null,
-  page: 1, limit: 30, req: null,
+  page: 1, limit: 30, req: null, sources: null,
 };
 
 function storeInstanceId() {
@@ -1225,18 +1225,12 @@ function renderStoreInit() {
 async function doStoreSearch() {
   const kind = $('#storeKind').value || 'mod';
   const srcEl = $('#storeSource');
-  const source = (srcEl && srcEl.value) || 'modrinth';
+  const source = (srcEl && srcEl.value) || 'all';
   STORE.kind = kind;
   STORE.source = source;
   STORE.type = 'search';
   const box = $('#storeResults');
   box.innerHTML = '<div class="loading-line">搜索中…</div>';
-
-  if (source === 'curseforge') {
-    STORE.page = 1;
-    STORE.req = { cf: true, kind, q: ($('#storeQuery').value || '').trim(), limit: STORE.limit };
-    return doCfSearch(kind, 1);
-  }
 
   const q = ($('#storeQuery').value || '').trim();
   const instId = storeInstanceId();
@@ -1244,10 +1238,17 @@ async function doStoreSearch() {
   const kindArg = kind === 'modpack' ? 'modpack' : kind;
   const useLoader = (kind === 'mod' || kind === 'modpack') ? (inst?.loader || '') : '';
 
+  if (source === 'curseforge') {
+    STORE.page = 1;
+    STORE.req = { mode: 'cf', kindArg, q, limit: STORE.limit };
+    return doCfSearch(kindArg, 1);
+  }
+
   // 记下这次的检索条件：翻页时必须原样重放，不能再去读输入框
   // （用户可能翻页前顺手改了关键词却没回车）
   STORE.req = {
-    cf: false, q, kindArg, source,
+    mode: source === 'all' ? 'all' : 'mr',
+    q, kindArg,
     version: inst?.version || '', loader: useLoader,
     withFilter: true, instId, limit: STORE.limit,
   };
@@ -1263,10 +1264,11 @@ async function doStoreSearch() {
 async function runStoreSearch(page) {
   const box = $('#storeResults');
   const req = STORE.req;
-  if (!req || req.cf) return;
+  if (!req || req.mode === 'cf') return;
   const offset = (page - 1) * req.limit;
+  const endpoint = req.mode === 'all' ? '/api/search/all' : '/api/mr/search';
 
-  const search = (withFilter) => apiGet(`/api/mr/search?query=${encodeURIComponent(req.q)}&kind=${req.kindArg}`
+  const search = (withFilter) => apiGet(`${endpoint}?query=${encodeURIComponent(req.q)}&kind=${req.kindArg}`
     + `&offset=${offset}&limit=${req.limit}`
     + (withFilter ? `&mcVersion=${encodeURIComponent(req.version)}&loader=${encodeURIComponent(req.loader)}` : ''));
 
@@ -1287,6 +1289,7 @@ async function runStoreSearch(page) {
       }
     }
     STORE.hits = r.hits || [];
+    STORE.sources = r.sources || null;
     STORE.total = r.total || 0;
     STORE.queryInfo = r.queryInfo || null;
     STORE.page = page;
@@ -1301,11 +1304,24 @@ async function runStoreSearch(page) {
   }
 }
 
+/**
+ * 结果条目的来源徽标。
+ * 双源合并后必须能一眼看出这条是哪边的 —— 安装走的是不同接口
+ * （Modrinth 直接装；CurseForge 要先选文件），用户也得知道去哪个站找。
+ */
+function sourceBadge(h) {
+  const kind = h.sourceKind || 'modrinth';
+  const label = kind === 'curseforge' ? 'CF' : 'MR';
+  const title = kind === 'curseforge' ? 'CurseForge' : 'Modrinth';
+  const also = (h.alsoOn || []).map(s => (s === 'curseforge' ? 'CurseForge' : 'Modrinth')).join('、');
+  return `<span class="src-badge ${kind}" title="${esc(title)}${also ? '（' + esc(also) + ' 也有）' : ''}">${label}</span>`
+    + (also ? `<span class="src-also" title="两边都有">+</span>` : '');
+}
+
 /** 搜索结果的翻页 */
-async function gotoStorePage(n) {
-  const box = $('#storeResults');
+async function gotoStorePage(n) {  const box = $('#storeResults');
   if (box) box.classList.add('is-loading');
-  if (STORE.req && STORE.req.cf) await doCfSearch(STORE.req.kind, n);
+  if (STORE.req && STORE.req.mode === 'cf') await doCfSearch(STORE.req.kindArg, n);
   else await runStoreSearch(n);
   if (box) box.classList.remove('is-loading');
   const head = box && box.querySelector('.section-head');
@@ -1332,22 +1348,28 @@ function renderStoreResults() {
     ? `<span class="badge purple" style="margin-left:8px">中文检索：${esc(qi.original)} → ${esc(qi.used)}</span>` : '';
   const relaxedTip = STORE.relaxed
     ? `<div class="hint" style="color:var(--warn);margin:0 0 10px">⚠ ${esc(STORE.relaxed)}</div>` : '';
+  // 双源检索时把每个源的结果数摊开，用户能看出哪边查了、哪边没查
+  const srcTip = (STORE.sources && STORE.sources.length > 1)
+    ? `<span class="src-tips">${STORE.sources.map(s =>
+      `<span class="src-tip${s.ok ? '' : ' off'}" title="${esc(s.error || '')}">
+         ${esc(s.label)} <b>${s.total}</b>${s.ok ? '' : ' ✕'}</span>`).join('')}</span>`
+    : '';
   const head = `<div class="section-head" style="margin-top:18px">
       <h2>${STORE.kind === 'modpack' ? '整合包' : kindLabel(STORE.kind) + '搜索结果'}
-        <span class="muted">共 ${STORE.total} 个${transTip}</span></h2>
+        <span class="muted">共 ${STORE.total} 个${transTip}</span>${srcTip}</h2>
       <span class="muted">${inst ? '目标实例：' + esc(inst.name) + '（' + esc(inst.version) + ' / ' + esc(loaderName(inst.loader)) + '）' : '未选择实例'}</span>
     </div>${relaxedTip}`;
 
   if (!STORE.hits.length) {
     const qq = ($('#storeQuery') && $('#storeQuery').value || '').trim();
+    const triedBoth = (STORE.sources || []).filter(s => s.ok).length > 1;
     box.innerHTML = head + `<div class="empty">
       <div class="em-ico">◇</div>
-      <div class="em-t">Modrinth 上没有找到「${esc(qq)}」</div>
-      <div class="em-d">有些模组（例如 FTB Ultimine / 连锁破坏）只在 CurseForge、MC百科 或作者自己的站点发布，
-        Modrinth 没有收录，所以启动器里搜不到。</div>
+      <div class="em-t">${triedBoth ? 'Modrinth 和 CurseForge 都没有找到' : (STORE.source === 'curseforge' ? 'CurseForge 上' : 'Modrinth 上')}「${esc(qq)}」</div>
+      <div class="em-d">有些模组只在 MC百科 或作者自己的站点发布，两边都没有收录。</div>
       <div class="row-gap" style="justify-content:center;margin-top:16px">
         <button class="btn btn-soft btn-sm" data-url="${esc(mcmodUrl(qq))}">在 MC百科 搜索「${esc(qq)}」</button>
-        <button class="btn btn-soft btn-sm" data-url="${esc(curseforgeUrl(qq))}">在 CurseForge 搜索</button>
+        <button class="btn btn-soft btn-sm" data-url="${esc(curseforgeUrl(qq))}">在 CurseForge 网站搜索</button>
       </div>
       <div class="em-d" style="margin-top:16px">下载到 .jar 或 .zip 后，直接把文件<b>拖进窗口</b>就能装进当前实例。</div>
     </div>`;
@@ -1381,7 +1403,7 @@ function renderStoreResults() {
     return `<div class="mr-item">
       <img class="mr-icon" src="/api/proxy?url=${encodeURIComponent(h.icon || '')}" onerror="this.style.visibility='hidden'">
       <div class="mr-body">
-        <div class="mr-title clickable" data-detail="${esc(h.id || h.slug)}" title="点击查看详情与全部版本">${esc(cn || h.title)}${cn ? `<span class="en-sub">${esc(h.title)}</span>` : ''}${h.fuzzy ? '<span class="badge purple" style="font-size:9px;margin-left:6px">相似</span>' : ''}</div>
+        <div class="mr-title clickable" data-detail="${esc(h.id || h.slug)}" title="点击查看详情与全部版本">${esc(cn || h.title)}${cn ? `<span class="en-sub">${esc(h.title)}</span>` : ''}${h.fuzzy ? '<span class="badge purple" style="font-size:9px;margin-left:6px">相似</span>' : ''}${sourceBadge(h)}</div>
         <div class="mr-desc">${esc(h.description)}</div>
         <div class="mr-stats">
           <span>作者 <b>${esc(h.author)}</b></span>
@@ -2446,6 +2468,7 @@ function renderSettings() {
   if ($('#setCfKey') && cfg.curseforgeApiKey) $('#setCfKey').value = cfg.curseforgeApiKey;
   $('#setConcurrency').value = cfg.downloadConcurrency || 12;
   if ($('#setMultiLink')) $('#setMultiLink').checked = cfg.multiLink !== false;
+  if ($('#setChunked')) $('#setChunked').checked = cfg.chunked === true;
   // 手动内存优化按钮：游戏跑着的时候不能动内存参数
   const optBtn = $('#btnOptimizeNow');
   if (optBtn) {
@@ -3012,6 +3035,17 @@ async function handleDroppedFiles(files) {
         await saveCfg({ multiLink: v });
         toast(v ? '已开启多链路下载' : '已关闭多链路下载',
           v ? '首选源先发，备选源错峰跟上' : '退回「镜像优先，失败回落官方」', 'ok');
+      } catch (err) { toast('保存失败', err.message, 'error'); }
+    };
+  }
+
+  // 双源分段并发开关
+  if ($('#setChunked')) {
+    $('#setChunked').onchange = async e => {
+      try {
+        await saveCfg({ chunked: e.target.checked });
+        toast(e.target.checked ? '已开启双源分段并发' : '已关闭双源分段并发',
+          e.target.checked ? '8MB 以上文件会切段分给两个源同时下' : '回退到竞速或串行', 'ok');
       } catch (err) { toast('保存失败', err.message, 'error'); }
     };
   }

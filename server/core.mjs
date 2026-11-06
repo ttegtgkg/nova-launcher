@@ -88,6 +88,7 @@ export const DEFAULTS = {
   closeLauncherOnPlay: false,
   showSnapshots: false,
   multiLink: true,           // 多链路下载：官方与镜像错峰竞速，先到先用
+  chunked: false,            // 双源分段并发（8MB+ 文件，实验性，默认关）
   theme: 'nova',             // 内置主题 key 或自定义主题 id（custom-xxxxxxxxxx）
   wallpaper: {               // 自定义壁纸（file 为 null 表示没设）
     file: null, opacity: 1, blur: 0, dim: 55, fit: 'cover', pos: 'center', updatedAt: 0,
@@ -596,18 +597,28 @@ export async function raceHttp(urls, { staggerMs = 500, ...opts } = {}) {
 }
 
 /**
- * 分段并发下载一个大文件。
+ * 分段并发下载一个大文件（可跨多个源）。
  * 需要目标服务器支持 Range（响应 206），不支持就抛错交给上层回落单流。
+ *
+ * 传多个 URL 时按段交替分配给不同源 —— 这就是「双源同时下载」：
+ * 一半数据从镜像拿、一半从官方拿，两条连接各跑各的。
+ * 只要有一段不认 Range 就整体抛错，上层自动回落到竞速或串行，
+ * 不会留下一半的文件。
  */
-async function rangeDownload(url, { size, parts = 4, onData = null, idleMs = 25000, totalMs = 900000 } = {}) {
+async function rangeDownload(urlOrUrls, { size, parts = 4, onData = null, idleMs = 25000, totalMs = 900000 } = {}) {
   if (!size || size < 1) throw new Error('缺少文件大小');
+  const urls = [...new Set((Array.isArray(urlOrUrls) ? urlOrUrls : [urlOrUrls]).filter(Boolean))];
+  if (!urls.length) throw new Error('没有可用的下载地址');
+
   const n = Math.max(1, Math.min(parts, 8));
   const chunk = Math.ceil(size / n);
   const bufs = new Array(n).fill(null);
+  const progress = new Array(n).fill(0);
   let got = 0;
 
   const jobs = [];
   for (let i = 0; i < n; i++) {
+    const url = urls[i % urls.length];          // 交替分配：段 0→源A，段 1→源B，段 2→源A …
     const start = i * chunk;
     const end = Math.min(size - 1, start + chunk - 1);
     if (start > end) { bufs[i] = Buffer.alloc(0); continue; }
@@ -616,10 +627,10 @@ async function rangeDownload(url, { size, parts = 4, onData = null, idleMs = 250
         idleMs, totalMs,
         headers: { Range: `bytes=${start}-${end}` },
         onData: (bytes) => {
-          // 每段独立计数，累加起来当作整体进度
           if (!onData) return;
-          if (bufs[i] == null) { /* 未完成 */ }
-          onData(Math.min(size, got + bytes), size);
+          progress[i] = bytes;
+          const sum = progress.reduce((a, b) => a + b, 0);
+          onData(Math.min(size, sum), size);
         },
       });
       if (!r.ok) throw new Error(`分段请求失败 HTTP ${r.status}`);
@@ -682,13 +693,13 @@ export function sha1File(p) {
 const CHUNK_MIN_BYTES = 8 * 1024 * 1024;
 const CHUNK_PARTS = 4;
 
-/** 「多链路下载」开关从配置读，5 秒缓存，避免每个文件都读一次盘 */
-let _mlCfg = null, _mlAt = 0;
-async function multiLinkEnabled() {
-  if (_mlCfg !== null && Date.now() - _mlAt < 5000) return _mlCfg;
-  try { _mlCfg = (await loadConfig()).multiLink !== false; } catch { _mlCfg = true; }
-  _mlAt = Date.now();
-  return _mlCfg;
+/** 下载策略要读配置，5 秒缓存 —— 批量下载几万个文件时不能每个都读盘 */
+let _cfgCache = null, _cfgAt = 0;
+async function loadConfigOnce() {
+  if (_cfgCache && Date.now() - _cfgAt < 5000) return _cfgCache;
+  try { _cfgCache = await loadConfig(); } catch { _cfgCache = DEFAULTS; }
+  _cfgAt = Date.now();
+  return _cfgCache;
 }
 
 /** 校验 + 落盘（原子写：先写 .part 再 rename） */
@@ -705,7 +716,7 @@ async function saveVerified(buf, dest, { size = 0, sha1 = null } = {}) {
   return { bytes: buf.length };
 }
 
-export async function downloadOne(url, dest, { source = 'auto', sha1 = null, size = 0, timeout = 60000, retries = 3, officialFirst = false, idleMs = 25000, onProgress = null, multiLink = null, chunked = false, failFastMs = 4000 } = {}) {
+export async function downloadOne(url, dest, { source = 'auto', sha1 = null, size = 0, timeout = 60000, retries = 3, officialFirst = false, idleMs = 25000, onProgress = null, multiLink = null, chunked = null, failFastMs = 4000 } = {}) {
   if (await exists(dest)) {
     if (!sha1) return { skipped: true };
     try { if ((await sha1File(dest)) === sha1) return { skipped: true }; } catch { /* 重下 */ }
@@ -717,24 +728,24 @@ export async function downloadOne(url, dest, { source = 'auto', sha1 = null, siz
     : officialFirst ? [...new Set([url, m])] : [...new Set([m, url])];
   const totalMs = Math.max(timeout, 180000);
   // multiLink 传 null 表示「跟设置走」；显式 true/false 则以调用方为准
-  const wantMulti = multiLink === null ? await multiLinkEnabled() : !!multiLink;
+  const cfgNow = await loadConfigOnce();
+  const wantMulti = multiLink === null ? (cfgNow.multiLink !== false) : !!multiLink;
+  const wantChunked = chunked === null ? (cfgNow.chunked === true) : !!chunked;
   const multi = wantMulti && source !== 'official' && targets.length > 1;
   let lastErr;
 
   for (let attempt = 0; attempt < retries; attempt++) {
-    // ① 大文件按 Range 切段并发。默认关闭：实测在限总带宽的 CDN 上
-    //    （BMCLAPI / Mojang 都是）反而比单连接慢，只在明确需要时打开。
-    if (chunked && size >= CHUNK_MIN_BYTES) {
-      for (const u of targets) {
-        try {
-          if (onProgress) onProgress(0, size);
-          const buf = await rangeDownload(u, {
-            size, parts: CHUNK_PARTS, idleMs, totalMs,
-            onData: (got, declared) => { if (onProgress) onProgress(got, size || declared); },
-          });
-          return await saveVerified(buf, dest, { size, sha1 });
-        } catch (e) { lastErr = e; }
-      }
+    // ① 大文件跨源分段：把文件切段，交替分给官方和镜像，两条连接同时跑。
+    //    默认关闭 —— 实测在限总带宽的 CDN 上收益不稳定，见 README。
+    if (wantChunked && size >= CHUNK_MIN_BYTES && targets.length) {
+      try {
+        if (onProgress) onProgress(0, size);
+        const buf = await rangeDownload(targets, {
+          size, parts: CHUNK_PARTS, idleMs, totalMs,
+          onData: (got, declared) => { if (onProgress) onProgress(got, size || declared); },
+        });
+        return await saveVerified(buf, dest, { size, sha1 });
+      } catch (e) { lastErr = e; }
     }
 
     // ② 多链路竞速：官方和镜像同时连，响应头先到的赢，另一条立刻掐断。

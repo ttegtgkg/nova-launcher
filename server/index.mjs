@@ -515,6 +515,122 @@ async function cleanOrphanJava() {
   return { found: orphans.length, killed };
 }
 
+/* ------------------------------------------------------- 双源同时搜索 */
+/**
+ * Modrinth 和 CurseForge 同时查，合并成一份结果。
+ *
+ * 为什么要合并：两边内容不重合。FTB Ultimine、大量国产模组只在 CurseForge；
+ * 光影/资源包生态则在 Modrinth 更全。以前只能在「数据源」下拉里二选一，
+ * 搜不到就得自己切过去再搜一遍。
+ *
+ * 合并规则：
+ *   - 同名（规范化后）只留一条，取下载量高的，另一来源记在 alsoOn 里
+ *   - 排序先按「和关键词的匹配程度」分层（完全一致 > 前缀 > 包含 > 其他），
+ *     同层内按下载量降序 —— 纯按下载量排会让冷门精确匹配沉底，
+ *     纯按来源交替又会把热门挤下去
+ *   - 某个源挂了不影响另一个，降级返回并在 sources 里说明
+ */
+async function searchAllSources({ query = '', kind = 'mod', mcVersion = '', loader = '', offset = 0, limit = 30 } = {}) {
+  const cfg = await loadConfig();
+  const cfKey = (cfg.curseforgeApiKey || '').trim();
+  const useCf = !!cfKey;
+
+  // 两边各取一半，凑够一页；只有一个源时全给它
+  const perSource = useCf ? Math.max(6, Math.ceil(limit / 2)) : limit;
+  const out = { mr: null, cf: null, errors: {} };
+
+  const jobs = [
+    mrSearch({ query, kind, mcVersion, loader, offset, limit: perSource })
+      .then(r => { out.mr = r; })
+      .catch(e => { out.errors.modrinth = e.message; }),
+  ];
+  if (useCf) {
+    jobs.push(
+      cfSearch(cfKey, { query, kind, mcVersion, loader, offset, limit: perSource })
+        .then(r => { out.cf = r; })
+        .catch(e => { out.errors.curseforge = e.message; }),
+    );
+  }
+  await Promise.all(jobs);
+
+  // 去重用的规范化：去掉括号里的平台后缀再做比较 ——
+  // 「Cloth Config API」和「Cloth Config API (Fabric/Forge/NeoForge)」
+  // 是同一个东西，不处理的话两边各出现一次
+  const norm = (s) => String(s || '')
+    .replace(/[（(][^)）]*[)）]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fa5]/g, '');
+  const all = [
+    ...(out.mr?.hits || []).map(h => ({ ...h, sourceKind: 'modrinth' })),
+    ...(out.cf?.hits || []).map(h => ({ ...h, sourceKind: 'curseforge' })),
+  ];
+
+  // 同名合并
+  const groups = new Map();
+  for (const h of all) {
+    const k = norm(h.title) || ('#' + h.id);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(h);
+  }
+  const hits = [...groups.values()].map((list) => {
+    list.sort((a, b) => (b.downloads || 0) - (a.downloads || 0));
+    const keep = { ...list[0] };
+    if (list.length > 1) keep.alsoOn = [...new Set(list.slice(1).map(x => x.sourceKind))];
+    return keep;
+  });
+
+  // 排序分两步：
+  //   ① 按「和关键词的匹配程度」分层（完全一致 > 前缀 > 包含 > 其他）
+  //   ② 同层内**按源交错**，而不是比下载量
+  //
+  // 为什么不比下载量：Modrinth 的 downloads 和 CurseForge 的 downloadCount
+  // 统计口径不一样（CF 是老平台，累计量普遍高一个数量级），直接比会让
+  // CF 的结果把 MR 的全挤到后面 —— 双源搜索就名存实亡了。
+  const q = norm(query);
+  const rank = (h) => {
+    if (!q) return 0;
+    const t = norm(h.title);
+    if (t === q) return 0;
+    if (t.startsWith(q)) return 1;
+    if (t.includes(q)) return 2;
+    return 3;
+  };
+
+  const tiers = new Map();
+  for (const h of hits) {
+    const r = rank(h);
+    if (!tiers.has(r)) tiers.set(r, []);
+    tiers.get(r).push(h);
+  }
+  const ordered = [];
+  for (const r of [...tiers.keys()].sort((a, b) => a - b)) {
+    const list = tiers.get(r);
+    // 每个源内部保持原顺序（各自已按相关度/热度排好），再交替取出
+    const queues = new Map();
+    for (const h of list) {
+      const k = h.sourceKind || 'modrinth';
+      if (!queues.has(k)) queues.set(k, []);
+      queues.get(k).push(h);
+    }
+    const arrs = [...queues.values()];
+    for (let i = 0; arrs.some(a => i < a.length); i++) {
+      for (const a of arrs) if (i < a.length) ordered.push(a[i]);
+    }
+  }
+
+  return {
+    hits: ordered.slice(0, limit),
+    total: (out.mr?.total || 0) + (out.cf?.total || 0),
+    queryInfo: out.mr?.queryInfo || null,
+    sources: [
+      { id: 'modrinth', label: 'Modrinth', ok: !!out.mr, total: out.mr?.total || 0, error: out.errors.modrinth || null },
+      ...(useCf
+        ? [{ id: 'curseforge', label: 'CurseForge', ok: !!out.cf, total: out.cf?.total || 0, error: out.errors.curseforge || null }]
+        : [{ id: 'curseforge', label: 'CurseForge', ok: false, total: 0, error: '未配置 API Key，只搜了 Modrinth' }]),
+    ],
+  };
+}
+
 /* ------------------------------------------------------------------ 路由 */
 async function handleApi(req, res, url) {
   const p = url.pathname;
@@ -1813,6 +1929,19 @@ async function handleApi(req, res, url) {
     return ok(res, { task: taskPublic(task) });
   }
 
+  if (p === '/api/search/all') {
+    try {
+      const r = await searchAllSources({
+        query: translateQuery(q.get('query') || '').query,
+        kind: q.get('kind') || 'mod',
+        mcVersion: q.get('mcVersion') || '',
+        loader: q.get('loader') || '',
+        offset: Number(q.get('offset') || 0),
+        limit: Number(q.get('limit') || 30),
+      });
+      return ok(res, r);
+    } catch (e) { return fail(res, '双源搜索失败: ' + e.message, 502); }
+  }
   if (p === '/api/mr/search') {
     try {
       const rawQuery = q.get('query') || '';

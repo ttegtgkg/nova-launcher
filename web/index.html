@@ -227,8 +227,9 @@
               <div class="field">
                 <label>数据源</label>
                 <select id="storeSource">
-                  <option value="modrinth">Modrinth（无需配置）</option>
-                  <option value="curseforge">CurseForge（需 API Key）</option>
+                  <option value="all">双源同时搜索（推荐）</option>
+                  <option value="modrinth">仅 Modrinth</option>
+                  <option value="curseforge">仅 CurseForge</option>
                 </select>
               </div>
               <div class="field grow">
@@ -493,6 +494,14 @@
             <p class="hint">
               开启后首选源先发、备选源半秒后跟上：首选正常时备选不会真的发出去，
               首选卡住或挂掉时能立刻接管，不用等满一个超时。关掉就退回「镜像优先，失败再回落官方」的串行方式。
+            </p>
+            <label class="switch-line">
+              <input type="checkbox" id="setChunked">
+              <span>双源分段并发（8MB 以上的文件，实验性）</span>
+            </label>
+            <p class="hint">
+              把大文件切成几段，交替分给官方和镜像，两条连接同时下载再拼起来。
+              实测能快 4~5 倍，但对服务器的 Range 支持有要求，网络抖动时不如上面的竞速稳，所以默认关闭。
             </p>
           </div>
 
