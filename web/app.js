@@ -3062,14 +3062,23 @@ async function handleDroppedFiles(files) {
         const r = await apiPost('/api/optimize/apply', { instance: S.selected || null });
         const mb = (n) => (n == null ? '—' : n >= 1024 ? `${(n / 1024).toFixed(1)} GB` : `${n} MB`);
         const bits = [];
-        if (r.orphans?.killed) bits.push(`清理了 ${r.orphans.killed} 个残留 Java 进程`);
+        const m = r.mem || {};
+        // ① 僵尸进程：永久收益
+        if (m.orphans?.killed) bits.push(`清掉 ${m.orphans.killed} 个残留 Java 进程（${m.orphans.freedMb} MB）`);
+        else if (m.orphans?.found) bits.push(`发现 ${m.orphans.found} 个残留进程但没能结束`);
+        // ② 工作集压缩：暂时收益，说清楚别让人误会
+        if (m.trimmed?.count) bits.push(`压缩 ${m.trimmed.count} 个进程的工作集（${m.trimmed.freedMb} MB）`);
+        // ③ 实际可用内存变化
+        if (m.before && m.after && m.freedMb > 0) bits.push(`可用内存 ${m.before.freeMb} → ${m.after.freeMb} MB`);
+        // ④ 内存分配是否调整
         if (r.before && r.after) {
           bits.push(r.changed
-            ? `内存 ${mb(r.before.memory)} → ${mb(r.after.memory)}，预设 ${r.before.jvmPreset} → ${r.after.jvmPreset}`
-            : `内存和预设本来就是最优（${mb(r.after.memory)}），无需调整`);
+            ? `分配 ${mb(r.before.memory)} → ${mb(r.after.memory)}，预设 ${r.before.jvmPreset} → ${r.after.jvmPreset}`
+            : `分配仍是 ${mb(r.after.memory)}（已是最优）`);
         }
-        toast(r.changed || r.orphans?.killed ? '内存优化完成' : '已是最优配置',
-          bits.join('；') || '当前配置已经合适', r.changed ? 'ok' : 'info', 7000);
+        const did = (m.orphans?.killed || m.trimmed?.count || r.changed);
+        toast(did ? '内存优化完成' : '已是最优状态',
+          bits.join('；') || '当前配置和内存状况都合适', did ? 'ok' : 'info', 8000);
         await refreshAll();
         renderSettings();
       } catch (e) {

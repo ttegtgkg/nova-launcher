@@ -87,7 +87,7 @@ CurseForge 的 API Key 属于敏感信息，**不会明文落盘**：
 | GET | `/api/config/crypto` | 当前加密后端（`dpapi` / `aes`） |
 | GET | `/api/about` | 开源归属声明（Markdown 原文） |
 | GET | `/api/optimize?instance=` | 内存优化建议（只读分析） |
-| POST | `/api/optimize/apply` | **手动内存优化**：清理残留 Java 进程 + 重算内存并写回实例。游戏运行时返回 `409` |
+| POST | `/api/optimize/apply` | **手动内存优化**：清僵尸 Java 进程 + 压缩本启动器进程工作集 + 重算内存并写回实例。游戏运行时返回 `409` |
 | POST | `/api/system/open` | 在资源管理器打开目录，body `{ target }`：`data`/`shared`/`cache`/`root`/`runtime`/`instances` |
 | POST | `/api/system/open-url` | 用系统浏览器打开外链，body `{ url }`（只允许 http/https） |
 | POST | `/api/system/clear-cache` | 清图标缓存 |
@@ -118,13 +118,33 @@ CurseForge 的 API Key 属于敏感信息，**不会明文落盘**：
 {
   "ok": true,
   "instance": { "id": "...", "name": "..." },
-  "before": { "memory": 3072, "jvmPreset": "aikar" },
+  "before": { "memory": 3072, "jvmPreset": "aikar" },   // 优化前的内存分配
   "after":  { "memory": 1536, "jvmPreset": "memsave" },
   "changed": true,
-  "orphans": { "found": 0, "killed": 0 },   // 清理掉的残留 java.exe
-  "tuned": { "memoryMb": 1536, "preset": "memsave", "notes": ["…决策理由…"] }
+  "tuned": { "memoryMb": 1536, "preset": "memsave", "notes": ["…决策理由…"] },
+
+  "mem": {
+    "before": { "totalMb": 7931, "freeMb": 887, "usedMb": 7044 },
+    "after":  { "totalMb": 7931, "freeMb": 1140, "usedMb": 6791 },
+    "freedMb": 249,                       // 可用内存实际变化
+    "orphans": {                          // ① 僵尸进程（永久释放）
+      "found": 0, "killed": 0, "freedMb": 0,
+      "list": [{ "pid": 1234, "workingSetMb": 812.5 }]
+    },
+    "trimmed": {                          // ② 工作集压缩（暂时腾挪）
+      "count": 3, "freedMb": 148.1,
+      "list": [{ "pid": 19704, "name": "node",
+                 "beforeMb": 52.8, "afterMb": 0, "freedMb": 52.8 }]
+    }
+  }
 }
 ```
+
+`mem.orphans` 和 `mem.trimmed` 是两个不同性质的收益，界面上也分开报：
+前者进程被结束了（真释放），后者只是把页面推给系统（进程还在，一忙又涨回来）。
+
+只压本启动器自己的进程树（node + 外壳 + 外壳的 WebView2 子进程），
+**绝不压正在运行的游戏** —— 那只会让它更卡。游戏运行时整个接口返回 `409`。
 
 ---
 

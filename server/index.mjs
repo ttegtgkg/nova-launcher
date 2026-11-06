@@ -28,6 +28,7 @@ import {
 } from './content.mjs';
 import { checkInstanceDeps } from './deps.mjs';
 import { cryptoStatus } from './secure.mjs';
+import { optimizeMemory } from './memory.mjs';
 import { translateQuery, cnName, buildLinks, mcmodSearchUrl, MOD_CN, CFPA_MODS } from './i18n.mjs';
 import { translateText } from './translate.mjs';
 import { buildIndex, indexStatus, fuzzyLookup } from './search.mjs';
@@ -459,61 +460,7 @@ async function buildOptimizeAdvice(instanceId) {
   };
 }
 
-/* ------------------------------------------------------- 残留 Java 进程 */
-/**
- * 找出命令行指向本启动器数据目录的 java 进程。
- *
- * 游戏崩溃 / 强退后，java.exe 常常还在后台跑，占着几百 MB 甚至上 GB，
- * 用户看着「可用内存」莫名其妙地少，却不知道是谁吃掉的 ——
- * 手动内存优化的第一件事就是把这些僵尸进程清掉。
- *
- * 只认命令行里带我们 data 目录路径的，绝不碰用户自己的其它 Java 程序。
- */
-function listJavaProcesses() {
-  return new Promise((resolve) => {
-    let ps;
-    try {
-      ps = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command',
-        "Get-CimInstance Win32_Process -Filter \"Name='java.exe'\" | "
-        + 'Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress'],
-      { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
-    } catch { return resolve([]); }
-    let out = '';
-    const timer = setTimeout(() => { try { ps.kill(); } catch { } resolve([]); }, 8000);
-    ps.stdout.on('data', d => { out += d; });
-    ps.on('close', () => {
-      clearTimeout(timer);
-      try {
-        const j = JSON.parse(out || '[]');
-        resolve(Array.isArray(j) ? j : [j]);
-      } catch { resolve([]); }
-    });
-    ps.on('error', () => { clearTimeout(timer); resolve([]); });
-  });
-}
 
-/** 清理本启动器遗留的 java 进程（返回 { found, killed }） */
-async function cleanOrphanJava() {
-  const procs = await listJavaProcesses();
-  const marker = path.resolve(DATA).toLowerCase();
-  const runningPid = state.running?.pid;
-  const orphans = procs.filter(p => {
-    const cmd = String(p.CommandLine || '').toLowerCase();
-    if (!cmd) return false;
-    if (!cmd.includes(marker)) return false;          // 不是我们拉起来的
-    if (runningPid && Number(p.ProcessId) === Number(runningPid)) return false;  // 正在跑的那个
-    return true;
-  });
-  let killed = 0;
-  for (const p of orphans) {
-    try {
-      spawn('taskkill', ['/pid', String(p.ProcessId), '/f'], { windowsHide: true, stdio: 'ignore' });
-      killed++;
-    } catch { }
-  }
-  if (killed) await new Promise(r => setTimeout(r, 600));   // 等系统回收内存
-  return { found: orphans.length, killed };
-}
 
 /* ------------------------------------------------------- 双源同时搜索 */
 /**
@@ -819,12 +766,17 @@ async function handleApi(req, res, url) {
     if (state.running) return fail(res, '游戏正在运行，请先关闭游戏再优化', 409);
     const instId = body.instance || null;
     const inst = instId ? await getInstance(instId) : null;
-    const before = inst
+    const beforeCfg = inst
       ? { memory: inst.memory ?? null, jvmPreset: inst.jvmPreset ?? null }
       : null;
 
-    // ① 先清残留 java 进程 —— 它们往往就吃掉了本该给游戏的内存
-    const orphans = await cleanOrphanJava();
+    // ① 真正去腾内存：清僵尸 java 进程 + 压缩本启动器各进程的工作集
+    //    （只压自己的进程，绝不碰游戏 —— 压缩游戏只会让它更卡）
+    const mem = await optimizeMemory({
+      dataDir: DATA,
+      instanceDir: inst ? inst.dir || path.join(INSTANCES, inst.id) : '',
+      runningPid: state.running?.pid || null,
+    }).catch(e => ({ error: e.message, orphans: { found: 0, killed: 0, freedMb: 0 }, trimmed: { count: 0, freedMb: 0 }, freedMb: 0 }));
 
     // ② 按「此刻」的内存与模组数重算
     const mods = inst ? (await listContents(inst.id, 'mod').catch(() => [])).filter(m => m.enabled) : [];
@@ -838,8 +790,8 @@ async function handleApi(req, res, url) {
     const after = inst ? { memory: tuned.memoryMb, jvmPreset: tuned.preset } : null;
     return ok(res, {
       instance: inst ? { id: inst.id, name: inst.name } : null,
-      before, after, tuned, orphans,
-      changed: !!(before && (before.memory !== after.memory || before.jvmPreset !== after.jvmPreset)),
+      before: beforeCfg, after, tuned, mem,
+      changed: !!(beforeCfg && (beforeCfg.memory !== after.memory || beforeCfg.jvmPreset !== after.jvmPreset)),
     });
   }
   if (p === '/api/system/open' && req.method === 'POST') {
