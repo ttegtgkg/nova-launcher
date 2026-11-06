@@ -40,6 +40,16 @@ function withToken(init = {}) {
   return { ...init, headers: { ...(init.headers || {}), 'X-Nova-Token': NOVA_TOKEN } };
 }
 
+/**
+ * 图片类 URL 补上令牌。
+ * `<img src>` 和 CSS 的 url() 是浏览器独立发起的请求，加不了自定义头，
+ * 所以这类地址一律走 `?t=` —— 不带的话图标/截图/壁纸会全部 401。
+ */
+function authUrl(path) {
+  if (!NOVA_TOKEN) return path;
+  return path + (path.includes('?') ? '&' : '?') + 't=' + encodeURIComponent(NOVA_TOKEN);
+}
+
 async function apiGet(url) {
   const r = await fetch(url, withToken());
   const j = await r.json().catch(() => ({ ok: false, error: '响应解析失败' }));
@@ -247,7 +257,7 @@ function applyWallpaper(wp) {
     root.style.setProperty('--wp-image', 'none');
   } else {
     root.dataset.wallpaper = 'on';
-    root.style.setProperty('--wp-image', `url("${WP.url}")`);
+    root.style.setProperty('--wp-image', `url("${authUrl(WP.url)}")`);
   }
   root.style.setProperty('--wp-opacity', String(WP.opacity));
   root.style.setProperty('--wp-blur', WP.blur + 'px');
@@ -267,7 +277,7 @@ function renderWallpaperPanel() {
 
   if (WP.has && WP.url) {
     prev.classList.remove('empty');
-    prev.style.backgroundImage = `url("${WP.url}")`;
+    prev.style.backgroundImage = `url("${authUrl(WP.url)}")`;
     prev.style.backgroundSize = WP.fit;
     $('#wpOverlay').style.display = '';
     $('#wpOverlay').style.setProperty('--wp-dim', WP.dim + '%');
@@ -947,8 +957,47 @@ function ldrTags(loaders) {
  * @param {string} projectId Modrinth 项目 id 或 slug
  * @param {object} opts { kind, instanceId }
  */
+/**
+ * 把 CurseForge 的文件列表转成和 Modrinth 的 version 一样的形状，
+ * 这样详情面板里那张「版本表」两个平台能共用一套渲染逻辑。
+ */
+function cfFilesAsVersions(files) {
+  return (files || []).map(f => {
+    // CurseForge 的文件对象里没有独立的「加载器」字段，只能从 displayName
+    // 里认（形如 "NeoForge 5.5.7" / "Fabric 0.15.11"）。不填的话详情面板的
+    // 「当前实例匹配」会永远算成 0 个。
+    const n = String(f.displayName || f.fileName || '');
+    let loader = null;
+    if (/neoforge/i.test(n)) loader = 'neoforge';
+    else if (/forge/i.test(n)) loader = 'forge';
+    else if (/fabric/i.test(n)) loader = 'fabric';
+    else if (/quilt/i.test(n)) loader = 'quilt';
+
+    return {
+      id: String(f.id),
+      name: f.displayName || f.fileName,
+      versionNumber: f.displayName || f.fileName,
+      gameVersions: f.gameVersions || [],
+      loaders: loader ? [loader] : [],
+      channel: f.releaseType === 1 ? 'release' : f.releaseType === 2 ? 'beta' : 'alpha',
+      datePublished: f.fileDate || null,
+      downloads: 0,
+      files: [{
+        url: f.downloadUrl || null,
+        filename: f.fileName,
+        primary: true,
+        size: f.fileLength || 0,
+        sha1: (f.hashes || []).find(h => h.algo === 1)?.value || null,
+      }],
+      // 作者关闭第三方下载时 downloadUrl 为 null，界面要提示只能去网页下
+      externalOnly: !f.downloadUrl,
+    };
+  });
+}
+
 async function openDetail(projectId, opts = {}) {
   const kind = opts.kind || 'mod';
+  const source = opts.source || 'modrinth';
   const inst = opts.instanceId
     ? S.instances.find(i => i.id === opts.instanceId)
     : currentInstance();
@@ -957,9 +1006,17 @@ async function openDetail(projectId, opts = {}) {
     { cancelText: '关闭', wide: true });
 
   try {
+    // 两个平台的项目 id 体系完全不同（MR 是 base62，CF 是数字），
+    // 拿 CF 的 id 去查 Modrinth 只会 404，必须按来源分流。
+    const isCf = source === 'curseforge' && kind !== 'modpack';
+    const q = encodeURIComponent(projectId);
     const [prRes, verRes] = await Promise.all([
-      apiGet('/api/mr/project?id=' + encodeURIComponent(projectId)),
-      apiGet('/api/mr/versions?project=' + encodeURIComponent(projectId)).catch(() => ({ versions: [] })),
+      apiGet(isCf ? `/api/cf/project?id=${q}` : `/api/mr/project?id=${q}`),
+      isCf
+        ? apiGet(`/api/cf/files?id=${q}${inst ? `&mcVersion=${encodeURIComponent(inst.version)}&loader=${encodeURIComponent(inst.loader || '')}` : ''}`)
+          .then(r => ({ versions: cfFilesAsVersions(r.files) }))
+          .catch(() => ({ versions: [] }))
+        : apiGet('/api/mr/versions?project=' + q).catch(() => ({ versions: [] })),
     ]);
     const p = prRes.project || {};
     const versions = verRes.versions || [];
@@ -976,7 +1033,7 @@ async function openDetail(projectId, opts = {}) {
     const isPack = p.projectType === 'modpack' || kind === 'modpack';
     const authors = (p.authors || []).map(a => a.name).join('、') || (p.author || '未知');
     const iconHtml = p.iconUrl
-      ? `<img class="detail-icon" src="/api/proxy?url=${encodeURIComponent(p.iconUrl)}" onerror="this.style.visibility='hidden'">`
+      ? `<img class="detail-icon" src="${authUrl(`/api/proxy?url=${encodeURIComponent(p.iconUrl)}`)}" onerror="this.style.visibility='hidden'">`
       : `<div class="detail-icon ph">◆</div>`;
 
     const matchFn = (v) => {
@@ -1128,7 +1185,18 @@ async function openDetail(projectId, opts = {}) {
         if (!inst) return toast('请先选择一个实例', '在「启动」页点击实例卡片', 'warn');
         b.disabled = true; b.textContent = '安装中';
         try {
-          if (isPack) {
+          if (isCf) {
+            // CurseForge：走它自己的安装接口，要带上 modId 与 fileId
+            const f = (v.files || [])[0] || {};
+            if (v.externalOnly || !f.url) {
+              throw new Error('作者关闭了第三方下载，请到 CurseForge 网页手动下载后拖进启动器');
+            }
+            await apiPost('/api/cf/install', {
+              instance: inst.id, kind, modId: p.id, fileId: vid,
+              fileName: f.filename, fileSize: f.size, downloadUrl: f.url,
+              slug: p.slug, title: p.title, websiteUrl: p.source,
+            });
+          } else if (isPack) {
             await apiPost('/api/pack/install', { project: p.id || projectId, versionId: vid, name: (p.cn || p.title || '整合包') });
           } else {
             await apiPost('/api/mr/install', {
@@ -1173,7 +1241,7 @@ function contentItemHtml(it, kind) {
   const displayName = cn || m.name || it.name;
   const enName = cn ? (m.name || src?.title || null) : null;
   const iconHtml = (src?.iconUrl && /^https?:/.test(src.iconUrl))
-    ? `<img src="/api/proxy?url=${encodeURIComponent(src.iconUrl)}" onerror="this.parentNode.innerHTML='◆'">`
+    ? `<img src="${authUrl(`/api/proxy?url=${encodeURIComponent(src.iconUrl)}`)}" onerror="this.parentNode.innerHTML='◆'">`
     : (m.icon && /^data:/.test(m.icon) ? `<img src="${esc(m.icon)}">`
       : `<span>${kind === 'mod' ? '◆' : kind === 'shader' ? '☀' : kind === 'resourcepack' ? '▩' : '▤'}</span>`);
   return `<div class="content-item${it.enabled ? '' : ' disabled'}">
@@ -1380,8 +1448,8 @@ function renderStoreResults() {
     box.innerHTML = head + `<div class="pack-grid">${STORE.hits.map(h => `
       <div class="pack-card" data-detail="${esc(h.id)}" data-kind="modpack" style="cursor:pointer">
         <div class="pack-banner">
-          <img src="/api/proxy?url=${encodeURIComponent(h.icon || '')}" onerror="this.style.display='none'">
-          <img class="pack-ico" src="/api/proxy?url=${encodeURIComponent(h.icon || '')}" onerror="this.style.display='none'">
+          <img src="${authUrl(`/api/proxy?url=${encodeURIComponent(h.icon || '')}`)}" onerror="this.style.display='none'">
+          <img class="pack-ico" src="${authUrl(`/api/proxy?url=${encodeURIComponent(h.icon || '')}`)}" onerror="this.style.display='none'">
         </div>
         <div class="pack-body">
           <div class="pack-title">${esc(h.cn || h.title)}${h.cn ? `<span class="en-sub">${esc(h.title)}</span>` : ''}</div>
@@ -1401,9 +1469,9 @@ function renderStoreResults() {
   box.innerHTML = head + `<div class="mr-results" style="max-height:none">${STORE.hits.map(h => {
     const cn = h.cn || null;
     return `<div class="mr-item">
-      <img class="mr-icon" src="/api/proxy?url=${encodeURIComponent(h.icon || '')}" onerror="this.style.visibility='hidden'">
+      <img class="mr-icon" src="${authUrl(`/api/proxy?url=${encodeURIComponent(h.icon || '')}`)}" onerror="this.style.visibility='hidden'">
       <div class="mr-body">
-        <div class="mr-title clickable" data-detail="${esc(h.id || h.slug)}" title="点击查看详情与全部版本">${esc(cn || h.title)}${cn ? `<span class="en-sub">${esc(h.title)}</span>` : ''}${h.fuzzy ? '<span class="badge purple" style="font-size:9px;margin-left:6px">相似</span>' : ''}${sourceBadge(h)}</div>
+        <div class="mr-title clickable" data-detail="${esc(h.id || h.slug)}" data-src="${esc(h.sourceKind || 'modrinth')}" title="点击查看详情与全部版本">${esc(cn || h.title)}${cn ? `<span class="en-sub">${esc(h.title)}</span>` : ''}${h.fuzzy ? '<span class="badge purple" style="font-size:9px;margin-left:6px">相似</span>' : ''}${sourceBadge(h)}</div>
         <div class="mr-desc">${esc(h.description)}</div>
         <div class="mr-stats">
           <span>作者 <b>${esc(h.author)}</b></span>
@@ -1414,7 +1482,7 @@ function renderStoreResults() {
       </div>
       <div class="mr-side">
         <button class="btn btn-primary btn-sm" data-store-install="${esc(h.id)}">安装</button>
-        <button class="btn btn-soft btn-sm" data-detail="${esc(h.id || h.slug)}">详情</button>
+        <button class="btn btn-soft btn-sm" data-detail="${esc(h.id || h.slug)}" data-src="${esc(h.sourceKind || 'modrinth')}">详情</button>
       </div>
     </div>`;
   }).join('')}</div>` + storePagerHtml();
@@ -2099,7 +2167,7 @@ async function renderTabScreenshots(inst, body) {
   } else {
     wall.innerHTML = `<div class="shot-grid">${items.map(s => `
       <div class="shot-item">
-        <img src="/api/screenshot/file?instance=${encodeURIComponent(inst.id)}&file=${encodeURIComponent(s.name)}"
+        <img src="${authUrl(`/api/screenshot/file?instance=${encodeURIComponent(inst.id)}&file=${encodeURIComponent(s.name)}`)}"
              alt="${esc(s.name)}" data-shot="${esc(s.name)}" loading="lazy">
         <div class="shot-ops">
           <button class="mini-btn" data-shot-reveal="${esc(s.name)}" title="在文件夹中显示">
@@ -2866,7 +2934,10 @@ async function handleDroppedFiles(files) {
     if (!d) return;
     e.preventDefault();
     e.stopPropagation();
-    openDetail(d.dataset.detail, { kind: d.dataset.kind || undefined });
+    openDetail(d.dataset.detail, {
+      kind: d.dataset.kind || undefined,
+      source: d.dataset.src || undefined,
+    });
   }, true);
 
   $('#btnRefresh').onclick = async () => {

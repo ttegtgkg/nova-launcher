@@ -584,8 +584,12 @@ async function handleApi(req, res, url) {
   const q = url.searchParams;
 
   // 鉴权：令牌不匹配就拒绝。健康检查类路由放行，方便排查端口问题。
+  //
+  // 除了请求头，也认 `?t=` 查询参数 —— 因为 `<img src>` 和 CSS 的 url()
+  // 是浏览器自己发起的请求，带不了自定义头。图标、截图、壁纸全靠这条路径，
+  // 只认 header 的话它们在界面上会全是空白。
   if (p !== '/api/ping') {
-    const got = String(req.headers['x-nova-token'] || '');
+    const got = String(req.headers['x-nova-token'] || '') || String(q.get('t') || '');
     if (got !== TOKEN) {
       return json(res, 401, { ok: false, error: '未授权的请求（缺少或错误的 X-Nova-Token）' });
     }
