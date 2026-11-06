@@ -429,8 +429,63 @@ async function buildOptimizeAdvice(instanceId) {
   };
 }
 
-/* ------------------------------------------------------------------ 路由 */
+/* ------------------------------------------------------- 残留 Java 进程 */
+/**
+ * 找出命令行指向本启动器数据目录的 java 进程。
+ *
+ * 游戏崩溃 / 强退后，java.exe 常常还在后台跑，占着几百 MB 甚至上 GB，
+ * 用户看着「可用内存」莫名其妙地少，却不知道是谁吃掉的 ——
+ * 手动内存优化的第一件事就是把这些僵尸进程清掉。
+ *
+ * 只认命令行里带我们 data 目录路径的，绝不碰用户自己的其它 Java 程序。
+ */
+function listJavaProcesses() {
+  return new Promise((resolve) => {
+    let ps;
+    try {
+      ps = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command',
+        "Get-CimInstance Win32_Process -Filter \"Name='java.exe'\" | "
+        + 'Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress'],
+      { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch { return resolve([]); }
+    let out = '';
+    const timer = setTimeout(() => { try { ps.kill(); } catch { } resolve([]); }, 8000);
+    ps.stdout.on('data', d => { out += d; });
+    ps.on('close', () => {
+      clearTimeout(timer);
+      try {
+        const j = JSON.parse(out || '[]');
+        resolve(Array.isArray(j) ? j : [j]);
+      } catch { resolve([]); }
+    });
+    ps.on('error', () => { clearTimeout(timer); resolve([]); });
+  });
+}
 
+/** 清理本启动器遗留的 java 进程（返回 { found, killed }） */
+async function cleanOrphanJava() {
+  const procs = await listJavaProcesses();
+  const marker = path.resolve(DATA).toLowerCase();
+  const runningPid = state.running?.pid;
+  const orphans = procs.filter(p => {
+    const cmd = String(p.CommandLine || '').toLowerCase();
+    if (!cmd) return false;
+    if (!cmd.includes(marker)) return false;          // 不是我们拉起来的
+    if (runningPid && Number(p.ProcessId) === Number(runningPid)) return false;  // 正在跑的那个
+    return true;
+  });
+  let killed = 0;
+  for (const p of orphans) {
+    try {
+      spawn('taskkill', ['/pid', String(p.ProcessId), '/f'], { windowsHide: true, stdio: 'ignore' });
+      killed++;
+    } catch { }
+  }
+  if (killed) await new Promise(r => setTimeout(r, 600));   // 等系统回收内存
+  return { found: orphans.length, killed };
+}
+
+/* ------------------------------------------------------------------ 路由 */
 async function handleApi(req, res, url) {
   const p = url.pathname;
   const q = url.searchParams;
@@ -588,6 +643,35 @@ async function handleApi(req, res, url) {
   }
   if (p === '/api/optimize') {
     return ok(res, await buildOptimizeAdvice(q.get('instance') || null));
+  }
+
+  /* ---- 手动内存优化（游戏未启动时） ---- */
+  if (p === '/api/optimize/apply' && req.method === 'POST') {
+    if (state.running) return fail(res, '游戏正在运行，请先关闭游戏再优化', 409);
+    const instId = body.instance || null;
+    const inst = instId ? await getInstance(instId) : null;
+    const before = inst
+      ? { memory: inst.memory ?? null, jvmPreset: inst.jvmPreset ?? null }
+      : null;
+
+    // ① 先清残留 java 进程 —— 它们往往就吃掉了本该给游戏的内存
+    const orphans = await cleanOrphanJava();
+
+    // ② 按「此刻」的内存与模组数重算
+    const mods = inst ? (await listContents(inst.id, 'mod').catch(() => [])).filter(m => m.enabled) : [];
+    const tuned = autoTuneMemory({
+      modCount: mods.length, enabledMods: mods.length, loader: inst?.loader || 'vanilla',
+    });
+
+    // ③ 写回实例（没指定实例就只给建议，不动配置）
+    if (inst) await updateInstance(inst.id, { memory: tuned.memoryMb, jvmPreset: tuned.preset });
+
+    const after = inst ? { memory: tuned.memoryMb, jvmPreset: tuned.preset } : null;
+    return ok(res, {
+      instance: inst ? { id: inst.id, name: inst.name } : null,
+      before, after, tuned, orphans,
+      changed: !!(before && (before.memory !== after.memory || before.jvmPreset !== after.jvmPreset)),
+    });
   }
   if (p === '/api/system/open' && req.method === 'POST') {
     const map = { data: DATA, shared: SHARED, cache: CACHE, root: ROOT, runtime: RUNTIME, instances: INSTANCES };

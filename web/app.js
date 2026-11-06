@@ -2420,6 +2420,16 @@ function renderSettings() {
   if ($('#setAutoBackup')) $('#setAutoBackup').checked = cfg.autoBackup !== false;
   if ($('#setCfKey') && cfg.curseforgeApiKey) $('#setCfKey').value = cfg.curseforgeApiKey;
   $('#setConcurrency').value = cfg.downloadConcurrency || 12;
+  if ($('#setMultiLink')) $('#setMultiLink').checked = cfg.multiLink !== false;
+  // 手动内存优化按钮：游戏跑着的时候不能动内存参数
+  const optBtn = $('#btnOptimizeNow');
+  if (optBtn) {
+    const running = !!S.status?.running;
+    optBtn.disabled = running;
+    optBtn.title = running ? '游戏运行中，关闭游戏后再优化' : '';
+    const hint = $('#optimizeHint');
+    if (hint) hint.textContent = running ? '游戏运行中，请先关闭游戏' : '游戏运行时不可用';
+  }
   $('#setExtraJvm').value = currentInstance()?.extraJvmArgs || cfg.extraJvmArgs || '';
   const cur = currentInstance();
   $('#memTarget').textContent = cur ? cur.name : '全局默认（新建实例时使用）';
@@ -2969,8 +2979,51 @@ async function handleDroppedFiles(files) {
   $('#setSource').onchange = e => { saveCfg({ source: e.target.value }); toast('下载源已更新', e.target.selectedOptions[0].text, 'ok'); };
   $('#setConcurrency').onchange = e => saveCfg({ downloadConcurrency: Number(e.target.value) || 12 });
 
+  // 多链路下载开关
+  if ($('#setMultiLink')) {
+    $('#setMultiLink').onchange = async e => {
+      const v = e.target.checked;
+      try {
+        await saveCfg({ multiLink: v });
+        toast(v ? '已开启多链路下载' : '已关闭多链路下载',
+          v ? '首选源先发，备选源错峰跟上' : '退回「镜像优先，失败回落官方」', 'ok');
+      } catch (err) { toast('保存失败', err.message, 'error'); }
+    };
+  }
+
+  // 手动内存优化（游戏未启动时）
+  if ($('#btnOptimizeNow')) {
+    $('#btnOptimizeNow').onclick = async () => {
+      const btn = $('#btnOptimizeNow');
+      if (S.status?.running) return toast('游戏正在运行', '先关闭游戏再优化内存', 'warn');
+      btn.disabled = true;
+      const old = btn.textContent;
+      btn.textContent = '优化中…';
+      try {
+        const r = await apiPost('/api/optimize/apply', { instance: S.selected || null });
+        const mb = (n) => (n == null ? '—' : n >= 1024 ? `${(n / 1024).toFixed(1)} GB` : `${n} MB`);
+        const bits = [];
+        if (r.orphans?.killed) bits.push(`清理了 ${r.orphans.killed} 个残留 Java 进程`);
+        if (r.before && r.after) {
+          bits.push(r.changed
+            ? `内存 ${mb(r.before.memory)} → ${mb(r.after.memory)}，预设 ${r.before.jvmPreset} → ${r.after.jvmPreset}`
+            : `内存和预设本来就是最优（${mb(r.after.memory)}），无需调整`);
+        }
+        toast(r.changed || r.orphans?.killed ? '内存优化完成' : '已是最优配置',
+          bits.join('；') || '当前配置已经合适', r.changed ? 'ok' : 'info', 7000);
+        await refreshAll();
+        renderSettings();
+      } catch (e) {
+        toast('优化失败', e.message, 'error');
+      } finally {
+        btn.disabled = false; btn.textContent = old;
+      }
+    };
+  }
+
   // 启动时自动内存优化
-  $('#setAutoOptimize').onchange = async e => {    const v = e.target.checked;
+  $('#setAutoOptimize').onchange = async e => {
+    const v = e.target.checked;
     try {
       if (S.selected) await apiPost('/api/instances/update', { id: S.selected, autoOptimize: v });
       else await apiPost('/api/config', { autoOptimize: v });

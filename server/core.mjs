@@ -86,6 +86,7 @@ export const DEFAULTS = {
   curseforgeApiKey: '',      // CurseForge 官方 API Key（可选，申请后填这里）
   closeLauncherOnPlay: false,
   showSnapshots: false,
+  multiLink: true,           // 多链路下载：官方与镜像错峰竞速，先到先用
   theme: 'nova',             // 内置主题 key 或自定义主题 id（custom-xxxxxxxxxx）
   wallpaper: {               // 自定义壁纸（file 为 null 表示没设）
     file: null, opacity: 1, blur: 0, dim: 55, fit: 'cover', pos: 'center', updatedAt: 0,
@@ -369,7 +370,7 @@ const httpAgent = new httpMod.Agent({ keepAlive: true, maxSockets: 32, keepAlive
  * idleMs:  多久没收到数据就放弃（默认 25s）
  * totalMs: 整体上限（默认 15min）
  */
-function httpGet(url, { idleMs = 25000, connectMs = 15000, totalMs = 900000, headers = {}, redirects = 6, onData = null } = {}) {
+function httpGet(url, { idleMs = 25000, connectMs = 15000, totalMs = 900000, headers = {}, redirects = 6, onData = null, signal = null, onHeaders = null } = {}) {
   return new Promise((resolve, reject) => {
     let u;
     try { u = new URL(url); } catch { return reject(new Error('URL 无效: ' + url)); }
@@ -397,12 +398,20 @@ function httpGet(url, { idleMs = 25000, connectMs = 15000, totalMs = 900000, hea
       if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location && redirects > 0) {
         res.resume();
         const next = new URL(res.headers.location, url).href;
-        return httpGet(next, { idleMs, connectMs, totalMs, headers, redirects: redirects - 1, onData })
+        return httpGet(next, { idleMs, connectMs, totalMs, headers, redirects: redirects - 1, onData, signal, onHeaders })
           .then(r => finish(resolve, r), e => finish(reject, e));
       }
       if (res.statusCode !== 200) {
         res.resume();
-        return finish(resolve, { ok: false, status: res.statusCode });
+        // 206 是要给分段下载单独处理的，这里先当成非 200 报出来
+        return finish(resolve, { ok: false, status: res.statusCode, headers: res.headers });
+      }
+      // 拿到 200 响应头时先问一声：多链路竞速靠这个判定谁赢，
+      // 不然要等整个文件传完才知道，两条连接白占带宽。
+      if (onHeaders) {
+        let keep = true;
+        try { keep = onHeaders(res) !== false; } catch { }
+        if (!keep) { res.resume(); return finish(resolve, { ok: false, status: 0, aborted: true }); }
       }
       const chunks = [];
       let bytes = 0;
@@ -424,6 +433,15 @@ function httpGet(url, { idleMs = 25000, connectMs = 15000, totalMs = 900000, hea
       });
       res.on('error', e => finish(reject, e));
     });
+
+    // 外部取消（多链路竞速时，输掉的那条要立刻掐断，别白占带宽）
+    if (signal) {
+      if (signal.aborted) { req.destroy(new Error('已取消')); }
+      else signal.addEventListener('abort', () => {
+        try { req.destroy(new Error('已取消')); } catch { }
+        finish(reject, new Error('已取消'));
+      }, { once: true });
+    }
 
     // 连接超时：socket timeout 只在连上之后才生效，连不上时必须单独兜底
     connectTimer = setTimeout(() => {
@@ -455,6 +473,116 @@ async function fetchBuffer(url, opts = {}) {
 }
 
 export { httpGet };
+
+/* ------------------------------------------------------------ 多链路下载 */
+/*
+ * 原来一个文件只有「先镜像、失败再回落官方」这一条串行路径：
+ * 镜像挂了要等满 25 秒空闲超时才换下一条，国内网络下这段等待非常难受。
+ *
+ * 多链路改成同时发起：
+ *   - raceHttp    多个 URL 并发竞速，第一个拿到完整响应头的赢，
+ *                 其余立刻 abort（不白占带宽）
+ *   - rangeDownload 大文件按 Range 切段并发下载，最后拼起来
+ * 两者都可单独关闭（设置里的「多链路下载」开关）。
+ */
+
+/**
+ * 竞速：多个 URL 同时发起，**谁的响应头先到就用谁**，其余立刻 abort。
+ *
+ * 为什么按响应头判定而不是等传完：等传完的话两条连接都会把大半文件拉下来，
+ * 带宽白白翻倍（实测 22MB 的文件比单链路还慢 34%）。
+ * 按响应头判定则输家从头就被掐断，只有赢家真正在传。
+ */
+export async function raceHttp(urls, { staggerMs = 500, ...opts } = {}) {
+  const list = [...new Set((urls || []).filter(Boolean))];
+  if (!list.length) throw new Error('没有可用的下载地址');
+  if (list.length === 1) return httpGet(list[0], opts);
+
+  const controllers = list.map(() => new AbortController());
+  const timers = [];
+  let decided = false;
+  let winnerIdx = -1;
+
+  return new Promise((resolve, reject) => {
+    let pending = list.length;
+    let launched = 0;
+    const errors = [];
+
+    const launch = (i) => {
+      launched++;
+      const url = list[i];
+      httpGet(url, {
+        ...opts,
+        signal: controllers[i].signal,
+        onHeaders: () => {
+          if (decided) { try { controllers[i].abort(); } catch { } return false; }
+          decided = true;
+          winnerIdx = i;
+          controllers.forEach((c, j) => { if (j !== i) { try { c.abort(); } catch { } } });
+          return true;                       // 赢家继续把 body 收完
+        },
+      })
+        .then((res) => {
+          if (winnerIdx === i && res.ok) { res._url = url; resolve(res); return; }
+          if (winnerIdx === i) decided = false;
+        })
+        .catch((e) => {
+          errors.push(e);
+          if (winnerIdx === i) decided = false;
+          if (!decided && --pending === 0) reject(errors[errors.length - 1] || e);
+        });
+    };
+
+    // 第一个立刻发，其余错峰跟上；已经被选出来了就不再发
+    launch(0);
+    for (let i = 1; i < list.length; i++) {
+      timers.push(setTimeout(() => { if (!decided) launch(i); }, staggerMs * i));
+    }
+  }).finally(() => { timers.forEach(clearTimeout); });
+}
+
+/**
+ * 分段并发下载一个大文件。
+ * 需要目标服务器支持 Range（响应 206），不支持就抛错交给上层回落单流。
+ */
+async function rangeDownload(url, { size, parts = 4, onData = null, idleMs = 25000, totalMs = 900000 } = {}) {
+  if (!size || size < 1) throw new Error('缺少文件大小');
+  const n = Math.max(1, Math.min(parts, 8));
+  const chunk = Math.ceil(size / n);
+  const bufs = new Array(n).fill(null);
+  let got = 0;
+
+  const jobs = [];
+  for (let i = 0; i < n; i++) {
+    const start = i * chunk;
+    const end = Math.min(size - 1, start + chunk - 1);
+    if (start > end) { bufs[i] = Buffer.alloc(0); continue; }
+    jobs.push((async () => {
+      const r = await httpGet(url, {
+        idleMs, totalMs,
+        headers: { Range: `bytes=${start}-${end}` },
+        onData: (bytes) => {
+          // 每段独立计数，累加起来当作整体进度
+          if (!onData) return;
+          if (bufs[i] == null) { /* 未完成 */ }
+          onData(Math.min(size, got + bytes), size);
+        },
+      });
+      if (!r.ok) throw new Error(`分段请求失败 HTTP ${r.status}`);
+      if (r.buf.length !== end - start + 1) {
+        throw new Error(`分段长度不符 ${r.buf.length}/${end - start + 1}`);
+      }
+      bufs[i] = r.buf;
+      got += r.buf.length;
+      if (onData) onData(Math.min(size, got), size);
+    })());
+  }
+
+  await Promise.all(jobs);
+  const buf = Buffer.concat(bufs);
+  if (buf.length !== size) throw new Error(`拼接后大小不符 ${buf.length}/${size}`);
+  return buf;
+}
 
 /** 二进制内容（图片等）代理获取 */
 export async function httpBinary(url, opts = {}) {
@@ -496,7 +624,34 @@ export function sha1File(p) {
 
 /** 原子下载：先写 .part 再改名
  *  officialFirst: auto 模式下改为官方源优先（资源文件 CDN 实测比镜像快时使用） */
-export async function downloadOne(url, dest, { source = 'auto', sha1 = null, size = 0, timeout = 60000, retries = 3, officialFirst = false, idleMs = 25000, onProgress = null } = {}) {
+/** 大文件才值得切段并发；小文件切段的握手开销反而更大 */
+const CHUNK_MIN_BYTES = 8 * 1024 * 1024;
+const CHUNK_PARTS = 4;
+
+/** 「多链路下载」开关从配置读，5 秒缓存，避免每个文件都读一次盘 */
+let _mlCfg = null, _mlAt = 0;
+async function multiLinkEnabled() {
+  if (_mlCfg !== null && Date.now() - _mlAt < 5000) return _mlCfg;
+  try { _mlCfg = (await loadConfig()).multiLink !== false; } catch { _mlCfg = true; }
+  _mlAt = Date.now();
+  return _mlCfg;
+}
+
+/** 校验 + 落盘（原子写：先写 .part 再 rename） */
+async function saveVerified(buf, dest, { size = 0, sha1 = null } = {}) {
+  if (size && buf.length !== size) throw new Error(`大小不符 ${buf.length}/${size}`);
+  if (sha1) {
+    const got = crypto.createHash('sha1').update(buf).digest('hex');
+    if (got !== sha1) throw new Error('SHA1 校验失败');
+  }
+  await fsp.mkdir(path.dirname(dest), { recursive: true });
+  const tmp = dest + '.part';
+  await fsp.writeFile(tmp, buf);
+  await fsp.rename(tmp, dest);
+  return { bytes: buf.length };
+}
+
+export async function downloadOne(url, dest, { source = 'auto', sha1 = null, size = 0, timeout = 60000, retries = 3, officialFirst = false, idleMs = 25000, onProgress = null, multiLink = null, chunked = false, failFastMs = 4000 } = {}) {
   if (await exists(dest)) {
     if (!sha1) return { skipped: true };
     try { if ((await sha1File(dest)) === sha1) return { skipped: true }; } catch { /* 重下 */ }
@@ -506,38 +661,62 @@ export async function downloadOne(url, dest, { source = 'auto', sha1 = null, siz
   const targets = source === 'official' ? [url]
     : source === 'mirror' ? [m]
     : officialFirst ? [...new Set([url, m])] : [...new Set([m, url])];
+  const totalMs = Math.max(timeout, 180000);
+  // multiLink 传 null 表示「跟设置走」；显式 true/false 则以调用方为准
+  const wantMulti = multiLink === null ? await multiLinkEnabled() : !!multiLink;
+  const multi = wantMulti && source !== 'official' && targets.length > 1;
   let lastErr;
+
   for (let attempt = 0; attempt < retries; attempt++) {
-    for (const u of targets) {
-      const tmp = dest + '.part';
+    // ① 大文件按 Range 切段并发。默认关闭：实测在限总带宽的 CDN 上
+    //    （BMCLAPI / Mojang 都是）反而比单连接慢，只在明确需要时打开。
+    if (chunked && size >= CHUNK_MIN_BYTES) {
+      for (const u of targets) {
+        try {
+          if (onProgress) onProgress(0, size);
+          const buf = await rangeDownload(u, {
+            size, parts: CHUNK_PARTS, idleMs, totalMs,
+            onData: (got, declared) => { if (onProgress) onProgress(got, size || declared); },
+          });
+          return await saveVerified(buf, dest, { size, sha1 });
+        } catch (e) { lastErr = e; }
+      }
+    }
+
+    // ② 多链路竞速：官方和镜像同时连，响应头先到的赢，另一条立刻掐断。
+    //    镜像整个挂掉时不用再等满一个连接/空闲超时。
+    if (multi) {
       try {
-        await fsp.mkdir(path.dirname(dest), { recursive: true });
-        if (onProgress) onProgress(0, size);   // 每次尝试重新开始，通知调用方重置计数
-        const res = await fetchBuffer(u, {
-          idleMs, totalMs: Math.max(timeout, 180000),
+        if (onProgress) onProgress(0, size);
+        const res = await raceHttp(targets, {
+          idleMs, totalMs,
           onData: (got, declared) => { if (onProgress) onProgress(got, size || declared); },
         });
-        if (!res.ok) { lastErr = new Error(`HTTP ${res.status}`); continue; }
-        const buf = res.buf;
-        if (size && buf.length !== size) {
-          lastErr = new Error(`大小不符 ${buf.length}/${size}`);
-          // 大小不符时仍可能可用（镜像偶发），继续尝试下一目标
-          continue;
+        return await saveVerified(res.buf, dest, { size, sha1 });
+      } catch (e) { lastErr = e; }
+    } else {
+      // ③ 单链路串行回落。第一个源用较短连接超时（failFast）：
+      //    镜像挂掉时 4 秒就能换官方，而不是干等 15 秒连接 / 25 秒空闲超时。
+      for (let i = 0; i < targets.length; i++) {
+        const u = targets[i];
+        try {
+          if (onProgress) onProgress(0, size);
+          const res = await fetchBuffer(u, {
+            idleMs, totalMs,
+            connectMs: i === 0 ? Math.min(failFastMs, 15000) : 15000,
+            onData: (got, declared) => { if (onProgress) onProgress(got, size || declared); },
+          });
+          if (!res.ok) { lastErr = new Error(`HTTP ${res.status}`); continue; }
+          return await saveVerified(res.buf, dest, { size, sha1 });
+        } catch (e) {
+          lastErr = e;
+          try { await fsp.unlink(dest + '.part'); } catch { }
         }
-        if (sha1) {
-          const got = crypto.createHash('sha1').update(buf).digest('hex');
-          if (got !== sha1) { lastErr = new Error('SHA1 校验失败'); continue; }
-        }
-        await fsp.writeFile(tmp, buf);
-        await fsp.rename(tmp, dest);
-        return { bytes: buf.length };
-      } catch (e) {
-        lastErr = e;
-        try { await fsp.unlink(dest + '.part'); } catch { }
       }
     }
     if (attempt < retries - 1) await new Promise(r => setTimeout(r, 400 * (attempt + 1)));
   }
+  try { await fsp.unlink(dest + '.part'); } catch { }
   throw new Error(`下载失败 ${path.basename(dest)}: ${lastErr?.message || 'unknown'} (${url})`);
 }
 

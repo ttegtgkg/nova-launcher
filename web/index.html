@@ -390,6 +390,10 @@
             </label>
             <p class="hint">开启后每次启动都会按「当前可用内存 + 模组数量」重新计算分配值与 JVM 预设，
               不必手动调；下面的内存与预设设置仅在关闭此开关后生效。</p>
+            <div class="row-gap" style="margin:12px 0">
+              <button class="btn btn-primary btn-sm" id="btnOptimizeNow">立即优化内存</button>
+              <span class="muted" id="optimizeHint" style="font-size:11.5px">游戏运行时不可用</span>
+            </div>
             <div class="autotune-box" id="autotunePreview"></div>
           </div>
 
@@ -482,6 +486,14 @@
               <label>并发下载数</label>
               <input type="number" id="setConcurrency" min="1" max="32">
             </div>
+            <label class="switch-line">
+              <input type="checkbox" id="setMultiLink" checked>
+              <span>多链路下载（官方与镜像错峰竞速，先到先用）</span>
+            </label>
+            <p class="hint">
+              开启后首选源先发、备选源半秒后跟上：首选正常时备选不会真的发出去，
+              首选卡住或挂掉时能立刻接管，不用等满一个超时。关掉就退回「镜像优先，失败再回落官方」的串行方式。
+            </p>
           </div>
 
           <div class="card pad">
