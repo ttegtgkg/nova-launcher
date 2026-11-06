@@ -52,11 +52,7 @@
       </button>
       <button class="nav-item" data-page="download">
         <svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
-        <span>下载游戏</span>
-      </button>
-      <button class="nav-item" data-page="store">
-        <svg viewBox="0 0 24 24"><path d="M3 9l2-5h14l2 5M4 9h16v10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z"/><path d="M9 13h6"/></svg>
-        <span>内容下载</span>
+        <span>下载</span>
       </button>
       <button class="nav-item" data-page="downloads">
         <svg viewBox="0 0 24 24"><path d="M4 6h10M4 12h16M4 18h7"/><circle cx="18" cy="6" r="2"/><circle cx="14" cy="18" r="2"/></svg>
@@ -154,6 +150,18 @@
 
       <!-- ---------- 下载 ---------- -->
       <section class="page" id="page-download">
+        <!-- 顶层：游戏本体 / 各类内容，都在这一页下 -->
+        <div class="dl-tabs dl-mega" id="dlMegaTabs">
+          <button class="dl-tab active" data-sec="game">游戏版本</button>
+          <button class="dl-tab" data-sec="mod">模组</button>
+          <button class="dl-tab" data-sec="shader">光影包</button>
+          <button class="dl-tab" data-sec="resourcepack">资源包</button>
+          <button class="dl-tab" data-sec="datapack">数据包</button>
+          <button class="dl-tab" data-sec="modpack">整合包</button>
+        </div>
+
+        <!-- ========== 一、游戏本体与加载器 ========== -->
+        <div id="dlSecGame">
         <div class="card pad">
           <div class="dl-tabs" id="dlTabs">
             <button class="dl-tab active" data-mode="vanilla">原版 Minecraft</button>
@@ -206,6 +214,45 @@
           <span class="muted" id="installedCount"></span>
         </div>
         <div class="version-list" id="installedVersions"></div>
+        </div><!-- /dlSecGame -->
+
+        <!-- ========== 二、内容：模组 / 光影 / 资源包 / 数据包 / 整合包 ========== -->
+        <div id="dlSecContent" class="hidden">
+          <div class="card pad">
+            <div class="toolbar">
+              <div class="field grow">
+                <label>下载到实例</label>
+                <select id="storeInstance"><option value="">请先创建实例</option></select>
+              </div>
+              <div class="field">
+                <label>数据源</label>
+                <select id="storeSource">
+                  <option value="modrinth">Modrinth（无需配置）</option>
+                  <option value="curseforge">CurseForge（需 API Key）</option>
+                </select>
+              </div>
+              <div class="field grow">
+                <label>搜索</label>
+                <input type="search" id="storeQuery" placeholder="支持中文，例如：钠 / 机械动力 / 光影" autocomplete="off">
+              </div>
+              <button class="btn btn-primary" id="btnStoreSearch">搜索</button>
+              <button class="btn btn-soft" id="btnPackImport">导入本地整合包</button>
+            </div>
+            <!-- 内容类型由上面的标签决定；保留这个 select 供旧代码取值 -->
+            <select id="storeKind" hidden>
+              <option value="mod">模组</option>
+              <option value="shader">光影包</option>
+              <option value="resourcepack">资源包</option>
+              <option value="datapack">数据包</option>
+              <option value="modpack">整合包</option>
+            </select>
+            <p class="hint">
+              这里只负责「找」和「装」。装好之后要启用/禁用/删除，请到
+              <b>实例 → 选中实例 → 模组 / 光影 / 资源包</b> 里管理（每个实例互不影响）。
+            </p>
+          </div>
+          <div id="storeResults"></div>
+        </div><!-- /dlSecContent -->
       </section>
 
       <!-- ---------- 下载管理 ---------- -->
@@ -232,45 +279,6 @@
         <div id="dlHistory"></div>
       </section>
 
-      <!-- ---------- 内容下载（只负责「找」和「装」） ---------- -->
-      <section class="page" id="page-store">
-        <div class="card pad">
-          <div class="toolbar">
-            <div class="field grow">
-              <label>下载到实例</label>
-              <select id="storeInstance"><option value="">请先创建实例</option></select>
-            </div>
-            <div class="field">
-              <label>数据源</label>
-              <select id="storeSource">
-                <option value="modrinth">Modrinth（无需配置）</option>
-                <option value="curseforge">CurseForge（需 API Key）</option>
-              </select>
-            </div>
-            <div class="field">
-              <label>内容类型</label>
-              <select id="storeKind">
-                <option value="mod">模组</option>
-                <option value="shader">光影包</option>
-                <option value="resourcepack">资源包</option>
-                <option value="datapack">数据包</option>
-                <option value="modpack">整合包</option>
-              </select>
-            </div>
-            <div class="field grow">
-              <label>搜索</label>
-              <input type="search" id="storeQuery" placeholder="支持中文，例如：钠 / 机械动力 / 光影" autocomplete="off">
-            </div>
-            <button class="btn btn-primary" id="btnStoreSearch">搜索</button>
-            <button class="btn btn-soft" id="btnPackImport">导入本地整合包</button>
-          </div>
-          <p class="hint">
-            这里只负责「找」和「装」。装好之后要启用/禁用/删除，请到
-            <b>实例 → 选中实例 → 模组 / 光影 / 资源包</b> 里管理（每个实例互不影响）。
-          </p>
-        </div>
-        <div id="storeResults"></div>
-      </section>
 
       <!-- ---------- 实例（管理入口，模组等是它的子项） ---------- -->
       <section class="page" id="page-instances">

@@ -651,6 +651,33 @@ input[type=range]::-webkit-slider-thumb:active { cursor: grabbing; transform: sc
   background: var(--accent-soft); border-color: var(--accent-line); color: var(--text);
 }
 
+/* 下载页顶层分区标签（游戏版本 / 模组 / 光影 …），比内层的那排更醒目 */
+.dl-tabs.dl-mega {
+  gap: 4px;
+  margin-bottom: 16px;
+  padding: 5px;
+  border-radius: 13px;
+  background: var(--sunk);
+  border: 1px solid var(--stroke);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.dl-tabs.dl-mega::-webkit-scrollbar { display: none; }
+.dl-tabs.dl-mega .dl-tab {
+  padding: 8px 16px;
+  border-radius: 9px;
+  font-size: 12.5px;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+.dl-tabs.dl-mega .dl-tab:hover { background: var(--card-hi); }
+.dl-tabs.dl-mega .dl-tab.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  box-shadow: 0 2px 12px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
 /* ---------------------------------------------- 内容分类 tabs */
 .kind-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
 .kind-tab {

@@ -360,23 +360,60 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal()
 
 const PAGE_META = {
   home: ['启动', '选择一个实例开始游戏'],
-  download: ['下载游戏', '安装原版 Minecraft 或模组加载器'],
-  store: ['内容下载', '搜索模组、光影、资源包与整合包，装进指定实例'],
+  download: ['下载', '装游戏本体与加载器，或搜索模组装进实例'],
   downloads: ['下载管理', '实时速度、进度与历史记录'],
   instances: ['实例', '每个实例独立管理自己的模组、存档、截图与设置'],
   settings: ['设置', '主题、内存、Java 与下载源配置'],
 };
 
+/**
+ * 下载页的顶层分区。
+ * `game` 是游戏本体 / 加载器，其余值直接就是 storeKind（mod / shader / …）。
+ * 原来「下载游戏」和「内容下载」是两个页面，但它们本质是同一件事
+ * ——「往这个实例里装点东西」，合并成一页用标签分开更省一次点击。
+ */
+let DL_SECTION = 'game';
+
+function setDownloadSection(sec, { search = false } = {}) {
+  DL_SECTION = sec || 'game';
+  const isGame = DL_SECTION === 'game';
+  $('#dlSecGame')?.classList.toggle('hidden', !isGame);
+  $('#dlSecContent')?.classList.toggle('hidden', isGame);
+  $$('#dlMegaTabs .dl-tab').forEach(b => b.classList.toggle('active', b.dataset.sec === DL_SECTION));
+  // 页面副标题跟着分区走，不然「下载」两个字的说明说不清当前在看什么
+  const sub = $('#pageSub');
+  if (sub && S.page === 'download') {
+    sub.textContent = isGame
+      ? '安装原版 Minecraft 或模组加载器'
+      : '搜索模组、光影、资源包与整合包，装进指定实例';
+  }
+
+  if (isGame) {
+    if (!S.versions.length) loadVersions();
+    loadInstalledVersions();
+    fillLoaderMcVersions();
+    return;
+  }
+
+  const kindSel = $('#storeKind');
+  if (!kindSel) return;
+  const changed = kindSel.value !== DL_SECTION;
+  kindSel.value = DL_SECTION;
+  renderStoreInit();
+  // 类型变了或还没搜过才请求，来回点同一个标签不重复打 API
+  if (search && (changed || !STORE.hits.length) && S.instances.length) doStoreSearch();
+}
+
 function switchPage(name) {
+  // 「内容下载」已并入「下载」页；旧调用点一律重定向到内容分区
+  if (name === 'store') { switchPage('download'); setDownloadSection('mod'); return; }
   S.page = name;
   $$('.page').forEach(p => p.classList.toggle('active', p.id === 'page-' + name));
   $$('.nav-item').forEach(b => b.classList.toggle('active', b.dataset.page === name));
   const [t, s] = PAGE_META[name] || ['', ''];
   $('#pageTitle').textContent = t;
   $('#pageSub').textContent = s;
-  if (name === 'download' && !S.versions.length) loadVersions();
-  if (name === 'download') { loadInstalledVersions(); fillLoaderMcVersions(); }
-  if (name === 'store') renderStoreInit();
+  if (name === 'download') setDownloadSection(DL_SECTION);
   if (name === 'downloads') loadDownloads();
   if (name === 'instances') renderInstancesPage();
   if (name === 'settings') renderSettings();
@@ -1774,10 +1811,11 @@ async function renderTabContent(inst, body, kind) {
       .then(r => toast('已打开', r.dir, 'ok', 2500)).catch(() => { }));
   $$('[data-goto-store]', body).forEach(b => {
     b.onclick = () => {
-      switchPage('store');
-      $('#storeKind').value = b.dataset.gotoStore === 'shader' ? 'shader'
+      const k = b.dataset.gotoStore === 'shader' ? 'shader'
         : b.dataset.gotoStore === 'resourcepack' ? 'resourcepack'
           : b.dataset.gotoStore === 'datapack' ? 'datapack' : 'mod';
+      switchPage('download');
+      setDownloadSection(k);
       $('#storeInstance').value = inst.id;
       doStoreSearch();
     };
@@ -2795,9 +2833,16 @@ async function handleDroppedFiles(files) {
   };
 
   // 下载页
-  $$('.dl-tab').forEach(b => b.onclick = () => {
+  // 下载页顶层标签：游戏版本 / 各类内容
+  $$('#dlMegaTabs .dl-tab').forEach(b => b.onclick = () => {
+    setDownloadSection(b.dataset.sec, { search: true });
+  });
+
+  // 内层：原版 / 加载器。选择器必须限定在 #dlTabs 内，
+  // 顶层标签也用了 .dl-tab，全局选会把两套标签串在一起。
+  $$('#dlTabs .dl-tab').forEach(b => b.onclick = () => {
     S.dlMode = b.dataset.mode;
-    $$('.dl-tab').forEach(x => x.classList.toggle('active', x === b));
+    $$('#dlTabs .dl-tab').forEach(x => x.classList.toggle('active', x === b));
     $('#dlVanilla').classList.toggle('hidden', S.dlMode !== 'vanilla');
     $('#dlLoader').classList.toggle('hidden', S.dlMode !== 'loader');
   });
@@ -3182,14 +3227,16 @@ async function boot() {
     if (qs.get('tab')) INST.tab = qs.get('tab');
   }
   const initPage = qs.get('page');
-  if (initPage && PAGE_META[initPage]) switchPage(initPage);
+  // ?page=store 是老链接（内容下载已并入下载页），一并接住
+  if (initPage && (PAGE_META[initPage] || initPage === 'store')) switchPage(initPage);
 
-  // ?q=<关键词> 直接带着关键词进内容下载页搜索
+  // ?q=<关键词> 直接带着关键词进下载页的内容分区搜索
   const initQuery = qs.get('q');
   if (initQuery) {
     setTimeout(() => {
       if (!$('#storeQuery')) return;
-      if (S.page !== 'store') switchPage('store');
+      if (S.page !== 'download') switchPage('download');
+      setDownloadSection('mod');
       $('#storeQuery').value = initQuery;
       doStoreSearch();
     }, 900);
