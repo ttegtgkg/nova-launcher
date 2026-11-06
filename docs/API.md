@@ -132,8 +132,10 @@ CurseForge 的 API Key 属于敏感信息，**不会明文落盘**：
       "list": [{ "pid": 1234, "workingSetMb": 812.5 }]
     },
     "trimmed": {                          // ② 工作集压缩（暂时腾挪）
-      "count": 3, "freedMb": 148.1,
-      "list": [{ "pid": 19704, "name": "node",
+      "count": 30, "freedMb": 3681.2,
+      "othersCount": 28,              // 其中属于其他应用的
+      "othersFreedMb": 3544.4,
+      "list": [{ "pid": 19704, "name": "node", "ours": true,
                  "beforeMb": 52.8, "afterMb": 0, "freedMb": 52.8 }]
     }
   }
@@ -143,8 +145,10 @@ CurseForge 的 API Key 属于敏感信息，**不会明文落盘**：
 `mem.orphans` 和 `mem.trimmed` 是两个不同性质的收益，界面上也分开报：
 前者进程被结束了（真释放），后者只是把页面推给系统（进程还在，一忙又涨回来）。
 
-只压本启动器自己的进程树（node + 外壳 + 外壳的 WebView2 子进程），
-**绝不压正在运行的游戏** —— 那只会让它更卡。游戏运行时整个接口返回 `409`。
+压缩范围包含**其他应用**（按工作集从大到小，最多 40 个），但会跳过：
+系统关键进程（csrss/wininit/lsass/services/dwm/svchost…）、
+正在运行的游戏、所有 java/javaw、工作集 < 5 MB 的进程。
+游戏运行时整个接口返回 409。
 
 ---
 

@@ -178,28 +178,44 @@ if ($t) {
 }
 
 /**
- * 找出「我们自己」的进程：本 node 后端 + 桌面外壳 + 外壳下面挂的所有子进程
- * （WebView2 的 GPU / 渲染 / 网络进程都是外壳的后代）。
+ * 挑出「可以压」的进程。
  *
- * 绝不碰游戏进程，也绝不碰别的应用的 WebView2。
+ * 用户明确要求把其他应用也压掉，所以范围从「自己的进程树」放宽到「所有用户态进程」，
+ * 但仍然要守住几条底线 —— 压错进程是真的会出事：
+ *
+ *   ✗ 系统关键进程（csrss / wininit / lsass / services / dwm …）
+ *     压 dwm 会让整个桌面重绘卡顿，压 lsass 更不用说了
+ *   ✗ 正在运行的游戏（跨进程把它的热页面换出去，下一帧就要读回来）
+ *   ✗ 任何 java / javaw —— 分不清是游戏还是别的启动器，一律不碰
+ *   ✗ 工作集小于 5 MB 的，压了也没多少油水，纯浪费时间
+ *
+ * 剩下的按工作集从大到小排，占用越大的压起来收益越高。
  */
-async function ourOwnPids(procs, runningPid) {
-  const byPid = new Map(procs.map(p => [Number(p.ProcessId), p]));
-  const mine = new Set([process.pid]);
+const SYSTEM_PROCS = new Set([
+  'system', 'system idle process', 'registry', 'memory compression', 'idle',
+  'smss.exe', 'csrss.exe', 'wininit.exe', 'winlogon.exe', 'services.exe',
+  'lsass.exe', 'svchost.exe', 'dwm.exe', 'audiodg.exe', 'fontdrvhost.exe',
+  'sihost.exe', 'ctfmon.exe', 'runtimebroker.exe',
+]);
 
-  // node 的父进程就是桌面外壳（命令行模式启动时可能是 cmd/powershell，无所谓，
-  // 它下面不会有别人的 WebView2）
+const TRIM_MIN_WS = 5 * 1024 * 1024;   // 小于 5 MB 的跳过
+const TRIM_MAX_COUNT = 40;             // 一次最多压这么多个，避免耗时失控
+
+async function trimmableTargets(procs, runningPid, { includeOthers = true } = {}) {
+  const byPid = new Map(procs.map(p => [Number(p.ProcessId), p]));
+  const ours = new Set([process.pid]);
+
+  // 先认出「自己的进程树」：本 node + 桌面外壳 + 外壳下面挂的 WebView2 子进程
   const shellPid = Number(byPid.get(process.pid)?.ParentProcessId || 0);
   if (shellPid) {
-    mine.add(shellPid);
-    // 沿父链往上爬，能爬到 shellPid 的都算我们的
+    ours.add(shellPid);
     for (const p of procs) {
       const pid = Number(p.ProcessId);
       if (pid === process.pid || pid === shellPid) continue;
       let cur = Number(p.ParentProcessId || 0);
       let depth = 0;
       while (cur && depth < 10) {
-        if (cur === shellPid) { mine.add(pid); break; }
+        if (cur === shellPid) { ours.add(pid); break; }
         const np = byPid.get(cur);
         cur = np ? Number(np.ParentProcessId || 0) : 0;
         depth++;
@@ -207,8 +223,29 @@ async function ourOwnPids(procs, runningPid) {
     }
   }
 
-  if (runningPid) mine.delete(Number(runningPid));   // 游戏要是被误收进来，踢出去
-  return [...mine];
+  const targets = [];
+  for (const p of procs) {
+    const name = String(p.Name || '');
+    const low = name.toLowerCase();
+    const pid = Number(p.ProcessId);
+    if (!low) continue;
+
+    if (SYSTEM_PROCS.has(low)) continue;
+    if (low === 'java.exe' || low === 'javaw.exe') continue;
+    if (runningPid && pid === Number(runningPid)) continue;
+
+    const isOurs = ours.has(pid);
+    if (!isOurs && !includeOthers) continue;
+
+    const ws = Number(p.WorkingSetSize) || 0;
+    if (ws < TRIM_MIN_WS) continue;
+
+    targets.push({ pid, name, ws, ours: isOurs });
+  }
+
+  // 大的先压：收益高
+  targets.sort((a, b) => b.ws - a.ws);
+  return targets.slice(0, TRIM_MAX_COUNT);
 }
 
 /* ------------------------------------------------------------ 总入口 */
@@ -220,7 +257,7 @@ async function ourOwnPids(procs, runningPid) {
  * @param {string} opt.instanceDir  实例目录
  * @param {number} opt.runningPid   正在运行的游戏 pid（不碰它）
  */
-export async function optimizeMemory({ dataDir = '', instanceDir = '', runningPid = null } = {}) {
+export async function optimizeMemory({ dataDir = '', instanceDir = '', runningPid = null, includeOthers = true } = {}) {
   const before = memSnapshot();
 
   // 只查一次进程表，扫描和压缩都用这份数据
@@ -230,9 +267,14 @@ export async function optimizeMemory({ dataDir = '', instanceDir = '', runningPi
   const orphans = await scanOrphans({ dataDir, instanceDir, runningPid, procs });
   const kill = orphans.length ? await killOrphans(orphans) : { killed: 0, freedMb: 0 };
 
-  // ② 工作集压缩（只压自己的进程树）
-  const ownPids = await ourOwnPids(procs, runningPid);
-  const trim = await trimWorkingSets(ownPids);
+  // ② 工作集压缩：默认连其他应用一起压（用户要求），但守住 SYSTEM_PROCS 那几条底线
+  const targets = await trimmableTargets(procs, runningPid, { includeOthers });
+  const trim = await trimWorkingSets(targets.map(t => t.pid));
+
+  // 标一下哪些是别人的进程，界面要分开报
+  const oursSet = new Set(targets.filter(t => t.ours).map(t => t.pid));
+  for (const t of trim.trimmed) t.ours = oursSet.has(t.pid);
+  const others = trim.trimmed.filter(t => !t.ours);
 
   // 给系统一点时间把页面归入待机列表 / 内存压缩
   await new Promise(r => setTimeout(r, 900));
@@ -250,6 +292,8 @@ export async function optimizeMemory({ dataDir = '', instanceDir = '', runningPi
     trimmed: {
       count: trim.trimmed.length,
       freedMb: trim.freedMb,
+      othersCount: others.length,
+      othersFreedMb: Math.round(others.reduce((a, b) => a + b.freedMb, 0) * 10) / 10,
       list: trim.trimmed,
     },
   };

@@ -3067,7 +3067,12 @@ async function handleDroppedFiles(files) {
         if (m.orphans?.killed) bits.push(`清掉 ${m.orphans.killed} 个残留 Java 进程（${m.orphans.freedMb} MB）`);
         else if (m.orphans?.found) bits.push(`发现 ${m.orphans.found} 个残留进程但没能结束`);
         // ② 工作集压缩：暂时收益，说清楚别让人误会
-        if (m.trimmed?.count) bits.push(`压缩 ${m.trimmed.count} 个进程的工作集（${m.trimmed.freedMb} MB）`);
+        if (m.trimmed?.count) {
+          const o = m.trimmed.othersCount || 0;
+          bits.push(`压缩 ${m.trimmed.count} 个进程的工作集`
+            + (o ? `（含 ${o} 个其他应用）` : '')
+            + `，腾出 ${m.trimmed.freedMb} MB`);
+        }
         // ③ 实际可用内存变化
         if (m.before && m.after && m.freedMb > 0) bits.push(`可用内存 ${m.before.freeMb} → ${m.after.freeMb} MB`);
         // ④ 内存分配是否调整
