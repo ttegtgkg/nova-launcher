@@ -1355,7 +1355,7 @@ async function runStoreSearch(page) {
           STORE.relaxed = null;
         }
       } else if (hits0.length && req.withFilter && (req.version || req.loader)
-        && !hits0.some(h => exactMatch(h, req.q))) {
+        && !hits0.some(h => h.matchType ? h.matchType === 'exact' : exactMatch(h, req.q))) {
         // 有结果但没有「正主」：比如搜「建筑权杖」时 Construction Wand 本体
         // 不支持当前版本被过滤掉了，只剩它的附属。
         // 不强行放宽（那会给你一堆装不上的版本），而是明说一句。
@@ -1498,7 +1498,7 @@ function renderStoreResults() {
     return `<div class="mr-item">
       <img class="mr-icon" src="${authUrl(`/api/proxy?url=${encodeURIComponent(h.icon || '')}`)}" onerror="this.style.visibility='hidden'">
       <div class="mr-body">
-        <div class="mr-title clickable" data-detail="${esc(h.id || h.slug)}" data-src="${esc(h.sourceKind || 'modrinth')}" title="点击查看详情与全部版本">${esc(cn || h.title)}${cn ? `<span class="en-sub">${esc(h.title)}</span>` : ''}${h.fuzzy ? '<span class="badge purple" style="font-size:9px;margin-left:6px">相似</span>' : ''}${sourceBadge(h)}</div>
+        <div class="mr-title clickable" data-detail="${esc(h.id || h.slug)}" data-src="${esc(h.sourceKind || 'modrinth')}" title="点击查看详情与全部版本">${esc(cn || h.title)}${cn ? `<span class="en-sub">${esc(h.title)}</span>` : ''}${h.fuzzy ? '<span class="badge purple" style="font-size:9px;margin-left:6px">相似</span>' : ''}${h.matchType === 'variant' ? '<span class="badge gray" style="font-size:9px;margin-left:6px" title="名字比本体多出一截，通常是附属、移植版或同功能的不同实现">附属</span>' : ''}${sourceBadge(h)}</div>
         <div class="mr-desc">${esc(h.description)}</div>
         <div class="mr-stats">
           <span>作者 <b>${esc(h.author)}</b></span>

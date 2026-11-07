@@ -534,18 +534,33 @@ async function searchAllSources({ query = '', kind = 'mod', mcVersion = '', load
   // 统计口径不一样（CF 是老平台，累计量普遍高一个数量级），直接比会让
   // CF 的结果把 MR 的全挤到后面 —— 双源搜索就名存实亡了。
   const q = norm(query);
-  const rank = (h) => {
-    if (!q) return 0;
-    const t = norm(h.title);
-    if (t === q) return 0;
-    if (t.startsWith(q)) return 1;
-    if (t.includes(q)) return 2;
-    return 3;
+
+  /**
+   * 分出「本体 / 附属变体 / 其他」。
+   *
+   * 用户提的经验：模组名相对原模组多出一截后缀（`xxx-kots`、`xxx_revived`、
+   * `xxx-fabric`）时，九成五是附属、移植版或同功能的不同实现，不是本体。
+   * 搜「建筑权杖」时下面挂着一串 `建筑权杖-kots`「建筑权杖复兴版」就是这情况。
+   *
+   * 中文名和英文原名都拿来比对 —— 中文用户看中文名，英文名更接近 slug，
+   * 两边都可能带上后面那截。
+   */
+  const matchType = (h) => {
+    if (!q) return 'other';
+    for (const s of [h.cn, h.title]) {
+      const t = norm(s);
+      if (!t) continue;
+      if (t === q) return 'exact';                     // 本体
+      if (t.length > q.length && (t.startsWith(q) || t.endsWith(q))) return 'variant';
+    }
+    return 'other';
   };
+  const TYPE_RANK = { exact: 0, variant: 1, other: 2 };
 
   const tiers = new Map();
   for (const h of hits) {
-    const r = rank(h);
+    h.matchType = matchType(h);
+    const r = TYPE_RANK[h.matchType];
     if (!tiers.has(r)) tiers.set(r, []);
     tiers.get(r).push(h);
   }
