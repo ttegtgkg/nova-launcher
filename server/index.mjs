@@ -831,6 +831,112 @@ async function handleApi(req, res, url) {
       changed: !!(beforeCfg && (beforeCfg.memory !== after.memory || beforeCfg.jvmPreset !== after.jvmPreset)),
     });
   }
+  /* ---- 数据目录（自选存储位置） ---- */
+  if (p === '/api/system/data-dir' && req.method === 'GET') {
+    let marker = null;
+    try { marker = (await fsp.readFile(path.join(ROOT, '.nova-data-dir'), 'utf8')).trim(); } catch { }
+    return ok(res, {
+      dir: DATA,
+      defaultDir: path.join(ROOT, 'data'),
+      root: ROOT,
+      marker,
+      fromEnv: !!process.env.NOVA_DATA_DIR,     // 安装版由外壳传环境变量，此时改标记文件无效
+    });
+  }
+  // 弹系统文件夹选择框。前端拿不到真实路径（浏览器安全限制），只能后端弹。
+  if (p === '/api/system/pick-dir' && req.method === 'POST') {
+    const picked = await new Promise((resolve) => {
+      const start = String(body.startPath || '').replace(/'/g, "''");
+      const script = `
+Add-Type -AssemblyName System.Windows.Forms | Out-Null
+$d = New-Object System.Windows.Forms.FolderBrowserDialog
+$d.Description = '选择 Nova Launcher 的数据目录（存档、模组、下载的游戏都放这里）'
+$d.ShowNewFolderButton = $true
+${start ? `try { $d.SelectedPath = '${start}' } catch { }` : ''}
+if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write('<<<' + $d.SelectedPath + '>>>') }
+`;
+      let ps;
+      try {
+        ps = spawn('powershell', ['-NoProfile', '-STA', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
+          { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+      } catch { return resolve(null); }
+      let out = '';
+      const timer = setTimeout(() => { try { ps.kill(); } catch { } resolve(null); }, 180000);
+      ps.stdout.on('data', d => { out += d; });
+      ps.on('close', () => {
+        clearTimeout(timer);
+        const m = /<<<([\s\S]*?)>>>/.exec(out);
+        resolve(m ? m[1].trim() : null);
+      });
+      ps.on('error', () => { clearTimeout(timer); resolve(null); });
+    });
+    if (!picked) return fail(res, '已取消', 400);
+    return ok(res, { dir: picked });
+  }
+  if (p === '/api/system/data-dir' && req.method === 'POST') {
+    const raw = String(body.dir || '').trim();
+    if (!raw) return fail(res, '缺少目录');
+    const dir = path.resolve(raw);
+    if (dir === path.resolve(DATA)) return fail(res, '这就是当前目录');
+    if (dir === path.resolve(ROOT)) return fail(res, '不能选程序目录本身');
+
+    // 系统目录一律拒绝：把数据写进 Windows / Program Files 会污染系统，
+    // 而且这些位置往往需要管理员权限，之后启动器自己都可能读不回来
+    const sysRoots = [process.env.SystemRoot, process.env.windir,
+      process.env.ProgramFiles, process.env['ProgramFiles(x86)'], process.env.ProgramData]
+      .filter(Boolean).map(s => path.resolve(s).toLowerCase());
+    const low = dir.toLowerCase();
+    const hit = sysRoots.find(s => low === s || low.startsWith(s + '\\'));
+    if (hit) return fail(res, `不能放在系统目录（${hit}）里，换一个自己的文件夹`);
+    // 盘符根目录也不行，会把整盘根目录变成数据目录
+    if (/^[a-z]:\\?$/i.test(dir)) return fail(res, '不能直接选盘符根目录，请建一个子文件夹');
+
+    try {
+      const st = await fsp.stat(dir).catch(() => null);
+      if (st && !st.isDirectory()) return fail(res, '目标是一个文件，不是文件夹');
+      await fsp.mkdir(dir, { recursive: true });
+      await fsp.access(dir, fs.constants.W_OK);
+    } catch (e) {
+      return fail(res, '这个目录不可写: ' + e.message);
+    }
+
+    await fsp.writeFile(path.join(ROOT, '.nova-data-dir'), dir, 'utf8');
+
+    // 可选：把现有数据搬过去（后台任务，大目录会跑很久）
+    let task = null;
+    if (body.migrate) {
+      task = createTask('instance', `迁移数据到 ${path.basename(dir)}`);
+      const from = DATA;
+      const t2 = task;
+      (async () => {
+        try {
+          tstage(t2, '统计文件', 1);
+          const files = await collectDirEntries(from);
+          // 别把 webview2 缓存也搬过去，那是外壳自己的东西，换目录后会重建
+          const list = files.filter(f => !/^webview2[\\/]/i.test(f.name));
+          tstage(t2, '复制文件', list.length);
+          let done = 0;
+          for (const f of list) {
+            const dest = path.join(dir, f.name);
+            await fsp.mkdir(path.dirname(dest), { recursive: true });
+            await fsp.writeFile(dest, f.data);
+            taddFile(t2, f.data.length);
+            tprogress(t2, 1, f.name);
+            if (++done % 100 === 0) tlog(t2, `已复制 ${done}/${list.length}`);
+          }
+          tlog(t2, '复制完成。旧目录不会自动删除，确认新的能用之后再手动清理。');
+          tdone(t2, { from, to: dir, files: list.length });
+        } catch (e) { tfail(t2, e); }
+      })();
+    }
+    return ok(res, {
+      dir,
+      previous: DATA,
+      restartRequired: true,
+      task: task ? taskPublic(task) : null,
+    });
+  }
+
   if (p === '/api/system/open' && req.method === 'POST') {
     const map = { data: DATA, shared: SHARED, cache: CACHE, root: ROOT, runtime: RUNTIME, instances: INSTANCES };
     const dir = map[body.target];

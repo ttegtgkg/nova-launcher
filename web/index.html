@@ -531,18 +531,35 @@
           </div>
 
           <div class="card pad">
-            <div class="card-head"><h3>工具与维护</h3></div>
+            <div class="card-head">
+              <h3>数据目录</h3>
+              <span class="badge" id="dataDirBadge">默认位置</span>
+            </div>
+            <div class="field">
+              <label>当前数据目录</label>
+              <div class="dir-row">
+                <code id="dataDirPath" class="dir-path">—</code>
+                <button class="btn btn-soft btn-sm" id="btnPickDataDir">更改…</button>
+              </div>
+              <p class="hint">
+                存档、模组、下载的游戏、配置和快照都放这里。<b>改完要重启启动器才生效</b>。<br>
+                嫌 C 盘不够可以把整个数据目录挪到别的盘 —— 选「迁移现有数据」会连内容一起搬过去。
+              </p>
+            </div>
             <div class="row-gap">
-              <button class="btn btn-soft btn-sm" data-open="data">数据目录</button>
+              <button class="btn btn-soft btn-sm" data-open="data">打开数据目录</button>
               <button class="btn btn-soft btn-sm" data-open="shared">共享库</button>
               <button class="btn btn-soft btn-sm" data-open="cache">缓存</button>
             </div>
-            <div class="row-gap" style="margin-top:10px">
+            <p class="hint">游戏本体、依赖库、资源文件在「共享库」里由所有实例共用；实例之间互相隔离。</p>
+          </div>
+
+          <div class="card pad">
+            <div class="card-head"><h3>工具与维护</h3></div>
+            <div class="row-gap">
               <button class="btn btn-soft btn-sm" id="btnClearCache">清理图标缓存</button>
               <button class="btn btn-soft btn-sm" id="btnShowServerLog">查看服务日志</button>
             </div>
-            <p class="hint">数据目录：<code id="dataDirPath">—</code><br>
-              游戏本体、依赖库、资源文件在「共享库」里由所有实例共用；实例之间互相隔离。</p>
           </div>
 
           <div class="card pad wide">

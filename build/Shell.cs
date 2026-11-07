@@ -88,10 +88,33 @@ namespace NovaShell
         private readonly string _token = Guid.NewGuid().ToString("N");
         private bool _ready;
 
+        /// <summary>
+        /// 解析数据目录。
+        /// 优先读程序目录下的 .nova-data-dir（支持绝对路径与相对路径），
+        /// 没有就退回 &lt;程序目录&gt;\data。
+        /// 这个文件由设置页「更改数据目录」写入，改完重启生效 ——
+        /// 以前这里硬编码 _root\data，标记文件形同虚设。
+        /// </summary>
+        private static string ResolveDataDir(string root)
+        {
+            string fallback = Path.Combine(root, "data");
+            try
+            {
+                string marker = Path.Combine(root, ".nova-data-dir");
+                if (!File.Exists(marker)) return fallback;
+                string s = File.ReadAllText(marker).Trim().Trim('"');
+                if (s.Length == 0) return fallback;
+                string p = Path.IsPathRooted(s) ? s : Path.GetFullPath(Path.Combine(root, s));
+                Directory.CreateDirectory(p);
+                return p.TrimEnd('\\');
+            }
+            catch { return fallback; }
+        }
+
         public ShellForm(string[] args)
         {
             _root = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
-            _dataDir = Path.Combine(_root, "data");
+            _dataDir = ResolveDataDir(_root);
             _devMode = Array.IndexOf(args, "--dev") >= 0;
             if (Array.IndexOf(args, "--port") >= 0)
             {

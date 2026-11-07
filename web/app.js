@@ -2577,6 +2577,15 @@ function renderSettings() {
   const cur = currentInstance();
   $('#memTarget').textContent = cur ? cur.name : '全局默认（新建实例时使用）';
   $('#dataDirPath').textContent = S.status?.dataDir || '—';
+  // 数据目录徽标：是默认位置还是自定义的
+  const ddBadge = $('#dataDirBadge');
+  if (ddBadge) {
+    const cur2 = S.status?.dataDir || '';
+    const dflt = (S.status?.dataDir || '').replace(/[\\/]data$/i, '') + '\\data';
+    const isDefault = !cur2 || cur2.toLowerCase() === dflt.toLowerCase();
+    ddBadge.textContent = isDefault ? '默认位置' : '自定义';
+    ddBadge.className = 'badge' + (isDefault ? '' : ' ok');
+  }
 
   // Java 列表
   const jl = $('#javaList');
@@ -3331,6 +3340,50 @@ async function handleDroppedFiles(files) {
     try { await apiPost('/api/system/open', { target: b.dataset.open }); }
     catch (e) { toast('打开失败', e.message, 'error'); }
   });
+  // 自选数据目录
+  if ($('#btnPickDataDir')) {
+    $('#btnPickDataDir').onclick = async () => {
+      const btn = $('#btnPickDataDir');
+      btn.disabled = true; btn.textContent = '选择中…';
+      let picked = null;
+      try {
+        // 路径只能后端弹框拿到 —— 浏览器的目录选择器出于安全不给真实路径
+        const r = await apiPost('/api/system/pick-dir', { startPath: S.status?.dataDir || '' });
+        picked = r.dir;
+      } catch (e) {
+        // 用户取消是正常操作，不弹错误
+        if (!/已取消/.test(e.message)) toast('选择失败', e.message, 'error');
+        btn.disabled = false; btn.textContent = '更改…';
+        return;
+      }
+      btn.disabled = false; btn.textContent = '更改…';
+
+      openModal(`<h2>把数据目录换到这里？</h2>
+        <p class="modal-sub"><code>${esc(picked)}</code></p>
+        <div class="notice warn">
+          存档、模组、下载的游戏都会改放到新目录。<b>需要重启启动器才生效。</b>
+        </div>
+        <label class="switch-line">
+          <input type="checkbox" id="ddMigrate" checked>
+          <span>把现有数据一起搬过去（体积大时要等一会儿）</span>
+        </label>
+        <p class="hint">不勾选的话，新目录是空的，旧数据留在原地不删。</p>`, {
+        okText: '确认更改', onOk: async (box) => {
+          const migrate = $('#ddMigrate', box).checked;
+          try {
+            const r = await apiPost('/api/system/data-dir', { dir: picked, migrate });
+            if (r.task) {
+              toast('开始迁移', '进度见右下角任务面板，跑完再重启启动器', 'ok', 8000);
+              ensureTaskPolling();
+            } else {
+              toast('已保存', '重启启动器后生效', 'ok', 8000);
+            }
+          } catch (e) { toast('保存失败', e.message, 'error'); }
+        },
+      });
+    };
+  }
+
   $('#btnClearCache').onclick = async () => {
     try { await apiPost('/api/system/clear-cache'); toast('已清理', '图标缓存已清空', 'ok'); }
     catch (e) { toast('清理失败', e.message, 'error'); }
