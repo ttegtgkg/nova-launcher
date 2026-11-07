@@ -1379,11 +1379,17 @@ async function runStoreSearch(page) {
  */
 function sourceBadge(h) {
   const kind = h.sourceKind || 'modrinth';
-  const label = kind === 'curseforge' ? 'CF' : 'MR';
-  const title = kind === 'curseforge' ? 'CurseForge' : 'Modrinth';
-  const also = (h.alsoOn || []).map(s => (s === 'curseforge' ? 'CurseForge' : 'Modrinth')).join('、');
-  return `<span class="src-badge ${kind}" title="${esc(title)}${also ? '（' + esc(also) + ' 也有）' : ''}">${label}</span>`
-    + (also ? `<span class="src-also" title="两边都有">+</span>` : '');
+  // 两个平台都有的模组，两个徽标一起显示，谁在前面谁就是这次安装会走的源
+  const all = [kind, ...(h.alsoOn || [])].filter((k, i, a) => a.indexOf(k) === i);
+  const label = { modrinth: 'MR', curseforge: 'CF' };
+  const full = { modrinth: 'Modrinth', curseforge: 'CurseForge' };
+  return all.map((k, i) => {
+    const name = full[k] || k;
+    const hint = i === 0
+      ? (all.length > 1 ? `${name}（主来源，安装走这里；另一平台也有）` : name)
+      : `${name}（也能找到，安装仍走主来源）`;
+    return `<span class="src-badge ${k}" title="${esc(hint)}">${label[k] || k.toUpperCase()}</span>`;
+  }).join('');
 }
 
 /** 搜索结果的翻页 */

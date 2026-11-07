@@ -1593,7 +1593,7 @@ html[data-wallpaper="off"] .wallpaper { display: none; }
 /* ------------------------------------------------ 双源搜索来源标识 */
 .src-badge {
   display: inline-block;
-  margin-left: 6px;
+  margin-left: 5px;
   padding: 0 5px;
   border-radius: 4px;
   font-size: 9px;
@@ -1612,13 +1612,6 @@ html[data-wallpaper="off"] .wallpaper { display: none; }
   color: #f59e0b;
   background: color-mix(in srgb, #f59e0b 14%, transparent);
   border-color: color-mix(in srgb, #f59e0b 34%, transparent);
-}
-.src-also {
-  margin-left: 3px;
-  font-size: 10px;
-  font-weight: 700;
-  color: var(--text-mute);
-  vertical-align: middle;
 }
 
 .src-tips { display: inline-flex; gap: 8px; margin-left: 10px; }
