@@ -81,6 +81,7 @@ export const MOD_CN = {
   'cooking-for-blockheads': '懒人厨房',
   'distant-horizons': '遥远的地平线',
   'createaddition': '机械动力：附加',
+  'construction-wand': '建筑权杖',
 
   // ---- 世界生成 ----
   'twilightforest': '暮色森林',
@@ -644,6 +645,10 @@ export function cnDescription(slugOrTitle) {
  * 光靠 MOD_CN 的反向索引匹配不上，这里做显式映射。
  */
 export const CN_ALIASES = {
+  // 建筑权杖：社区叫法不统一，三种都收
+  '建筑权杖': ['construction-wand'],
+  '建筑魔杖': ['construction-wand'],
+  '建筑手杖': ['construction-wand'],
   '连锁挖矿': ['veinminer', 'ultimine-rewind', 'ultimine-unchained', 'excavate'],
   '连锁破坏': ['veinminer', 'ultimine-rewind', 'ultimine-unchained', 'excavate'],
   '连锁采集': ['veinminer', 'ore-excavation'],
@@ -861,6 +866,14 @@ const WORD_CN = {
   fences: '栅栏', wall: '围墙', walls: '围墙', stair: '楼梯', stairs: '楼梯',
   roof: '屋顶', roofs: '屋顶', furniture: '家具', decor: '装饰',
   decoration: '装饰', decorations: '装饰', building: '建筑', builder: '建造',
+  // 建造类工具：Construction Wand 这类模组的核心词
+  construction: '建筑', wand: '权杖', wands: '权杖', staff: '法杖', staffs: '法杖',
+ rod: '权杖', rods: '权杖', scepter: '权杖', sceptre: '权杖',
+  stick: '棍', sticks: '棍', scaffold: '脚手架', scaffolding: '脚手架',
+  blueprint: '蓝图', blueprints: '蓝图', schematic: '蓝图', schematics: '蓝图',
+  paste: '粘贴', fill: '填充', clone: '克隆', rotate: '旋转', mirror: '镜像',
+  gadget: '小工具', gadgets: '小工具', tool_: '工具', builder_: '建造器',
+  landmark: '地标', ruler: '标尺', measuring: '测量', measure: '测量',
   lamp: '灯', lantern: '灯笼', lanterns: '灯笼',
   glider: '滑翔翼', elytra: '鞘翅', chest: '箱子',
   chests: '箱子', barrel: '木桶', hopper: '漏斗',
