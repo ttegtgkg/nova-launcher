@@ -1343,7 +1343,9 @@ async function runStoreSearch(page) {
   try {
     let r = await search(req.withFilter);
     if (page === 1) {
-      if ((r.hits || []).length === 0 && req.withFilter && (req.version || req.loader)) {
+      const hits0 = r.hits || [];
+      // 一条都没有 → 放宽到全部版本（原来的行为）
+      if (!hits0.length && req.withFilter && (req.version || req.loader)) {
         const loose = await search(false).catch(() => null);
         if (loose && (loose.hits || []).length) {
           r = loose;
@@ -1352,6 +1354,12 @@ async function runStoreSearch(page) {
         } else {
           STORE.relaxed = null;
         }
+      } else if (hits0.length && req.withFilter && (req.version || req.loader)
+        && !hits0.some(h => exactMatch(h, req.q))) {
+        // 有结果但没有「正主」：比如搜「建筑权杖」时 Construction Wand 本体
+        // 不支持当前版本被过滤掉了，只剩它的附属。
+        // 不强行放宽（那会给你一堆装不上的版本），而是明说一句。
+        STORE.relaxed = `「${req.q}」本体可能不支持 ${req.version}${req.loader ? ' / ' + loaderName(req.loader) : ''}，下面是不限版本也能用的相关模组`;
       } else {
         STORE.relaxed = null;
       }
@@ -1390,6 +1398,19 @@ function sourceBadge(h) {
       : `${name}（也能找到，安装仍走主来源）`;
     return `<span class="src-badge ${k}" title="${esc(hint)}">${label[k] || k.toUpperCase()}</span>`;
   }).join('');
+}
+
+/**
+ * 是不是「正主」：中文名或原名与查询词完全一致。
+ * 注意不能用 includes —— 搜「建筑权杖」时「建筑权杖-kots」会命中，
+ * 那是附属不是本体，判断就不准了。
+ */
+function exactMatch(h, query) {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return true;
+  const cn = String(h.cn || '').toLowerCase();
+  const title = String(h.title || '').toLowerCase();
+  return cn === q || title === q;
 }
 
 /** 搜索结果的翻页 */
