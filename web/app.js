@@ -2749,12 +2749,17 @@ function bindAppearance() {
       catch (e) { toast('打开失败', e.message, 'error'); }
     };
     $('#btnThemeSample').onclick = async () => {
+      // 走后端落盘，不用浏览器的 Blob + <a download> ——
+      // 那是网页做法，会触发 WebView2 的下载栏、存到系统「下载」目录，
+      // 跟「这是个桌面应用」的定位不符。这里直接写到数据目录并定位过去。
+      const btn = $('#btnThemeSample');
+      btn.disabled = true;
       try {
-        const r = await apiGet('/api/themes/sample');
-        downloadText('示例主题-熔岩.json', r.json);
-        setTimeout(() => downloadText('示例主题-极光.html', r.html), 400);
-        toast('示例模板已保存', '改完拖回窗口就能用', 'ok', 5000);
-      } catch (e) { toast('获取失败', e.message, 'error'); }
+        const r = await apiPost('/api/themes/sample', {});
+        toast('示例模板已保存', `${r.files.map(f => f.name).join('、')}\n已打开所在文件夹`, 'ok', 7000);
+      } catch (e) {
+        toast('生成失败', e.message, 'error');
+      } finally { btn.disabled = false; }
     };
   }
 
@@ -2817,19 +2822,6 @@ function bindAppearance() {
       catch (e) { toast('保存失败', e.message, 'error'); }
     };
   }
-}
-
-/** 让用户把一段文本存成文件（示例模板用） */
-function downloadText(filename, text) {
-  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 
 function bindEvents() {

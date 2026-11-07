@@ -695,6 +695,24 @@ async function handleApi(req, res, url) {
   if (p === '/api/themes/sample' && req.method === 'GET') {
     return ok(res, { json: THEME_SAMPLE_JSON, html: THEME_SAMPLE_HTML });
   }
+  // 示例模板直接写到数据目录，不用浏览器的 Blob 下载 ——
+  // 那会触发 WebView2 的下载栏、存到系统「下载」里，不是桌面应用该有的行为。
+  if (p === '/api/themes/sample' && req.method === 'POST') {
+    const dir = path.join(DATA, 'theme-samples');
+    await fsp.mkdir(dir, { recursive: true });
+    const files = [
+      { name: '示例主题-熔岩.json', body: THEME_SAMPLE_JSON },
+      { name: '示例主题-极光.html', body: THEME_SAMPLE_HTML },
+    ];
+    const written = [];
+    for (const f of files) {
+      const fp = path.join(dir, f.name);
+      await fsp.writeFile(fp, f.body, 'utf8');
+      written.push({ name: f.name, path: fp });
+    }
+    spawn('explorer.exe', [dir], { detached: true, stdio: 'ignore' }).unref();
+    return ok(res, { dir, files: written });
+  }
 
   /* ---- 自定义壁纸 ---- */
   if (p === '/api/wallpaper') {
