@@ -6,6 +6,7 @@ import {
   P, INSTANCES, CACHE, exists, existsSync, readJson, writeJson, httpJson,
   downloadOne, downloadBatch, tlog, tstage, tprogress, taddFile, addBytes, zipEntries, zipRead,
   zipExtractAll, safeName, dirSize,
+  registerInstanceDir, forgetInstanceDir, gameRoots, getExtraGameDirs,
 } from './core.mjs';
 import { cnName, cnDescription, buildLinks, MOD_CN, CFPA_MODS } from './i18n.mjs';
 import { fuzzyLookup, needsFuzzy } from './search.mjs';
@@ -31,29 +32,44 @@ export function instanceDir(id) { return P.instance(id); }
 
 export async function listInstances() {
   const out = [];
-  let dirs = [];
-  try { dirs = await fsp.readdir(INSTANCES, { withFileTypes: true }); } catch { return out; }
-  for (const d of dirs) {
-    if (!d.isDirectory()) continue;
-    const meta = await readJson(path.join(INSTANCES, d.name, 'instance.json'), null);
-    if (!meta) continue;
-    const dir = path.join(INSTANCES, d.name);
-    out.push({
-      ...meta,
-      id: d.name,
-      dir,
-      size: await dirSize(path.join(dir, 'mods')).catch(() => 0),
-      exists: existsSync(path.join(dir, 'instance.json')),
-    });
+  const seen = new Set();
+  for (const root of gameRoots()) {
+    let dirs = [];
+    try { dirs = await fsp.readdir(root, { withFileTypes: true }); } catch { continue; }
+    for (const d of dirs) {
+      if (!d.isDirectory() || seen.has(d.name)) continue;
+      const dir = path.join(root, d.name);
+      const meta = await readJson(path.join(dir, 'instance.json'), null);
+      if (!meta) continue;
+      seen.add(d.name);
+      registerInstanceDir(d.name, dir);   // 让 P.instance(id) 找得到
+      out.push({
+        ...meta,
+        id: d.name,
+        dir,
+        root,
+        extraRoot: root !== INSTANCES,
+        size: await dirSize(path.join(dir, 'mods')).catch(() => 0),
+        exists: existsSync(path.join(dir, 'instance.json')),
+      });
+    }
   }
   return out.sort((a, b) => (b.lastPlayed || 0) - (a.lastPlayed || 0));
 }
 
-export async function createInstance({ name, version, loader = 'vanilla', loaderVersion, versionId, memory, jvmPreset }) {
+export async function createInstance({ name, version, loader = 'vanilla', loaderVersion, versionId, memory, jvmPreset, rootDir = null }) {
   const id = `${safeName(name).replace(/\s+/g, '-') || 'instance'}-${crypto.randomBytes(3).toString('hex')}`;
-  const dir = path.join(INSTANCES, id);
+  // 用户可以把实例建在别的盘：根目录必须在「默认根 + 已登记的游戏目录」里，避免乱写
+  let root = INSTANCES;
+  if (rootDir) {
+    const want = path.resolve(rootDir);
+    if (!gameRoots().includes(want)) throw new Error('这个目录还没添加成游戏目录: ' + want);
+    root = want;
+  }
+  const dir = path.join(root, id);
   await fsp.mkdir(dir, { recursive: true });
   await ensureInstanceDirs(dir);
+  registerInstanceDir(id, dir);
   const meta = {
     id, name: name || '新实例',
     version: version || versionId,
@@ -83,9 +99,10 @@ export async function createInstance({ name, version, loader = 'vanilla', loader
 }
 
 export async function getInstance(id) {
-  const meta = await readJson(path.join(INSTANCES, id, 'instance.json'), null);
+  const dir = P.instance(id);
+  const meta = await readJson(path.join(dir, 'instance.json'), null);
   if (!meta) return null;
-  return { ...meta, id, dir: path.join(INSTANCES, id) };
+  return { ...meta, id, dir };
 }
 
 export async function updateInstance(id, patch) {
@@ -93,14 +110,19 @@ export async function updateInstance(id, patch) {
   if (!meta) throw new Error('实例不存在');
   const next = { ...meta, ...patch, id };
   delete next.dir; delete next.size; delete next.exists;
-  await writeJson(path.join(INSTANCES, id, 'instance.json'), next);
+  await writeJson(path.join(P.instance(id), 'instance.json'), next);
   return next;
 }
 
 export async function deleteInstance(id) {
-  const dir = path.join(INSTANCES, id);
-  if (!dir.startsWith(INSTANCES)) throw new Error('非法实例路径');
+  const dir = P.instance(id);
+  // 支持多游戏目录后不能只认默认根，得确认它确实在某个登记过的根下，
+  // 免得 P.instance 回退出一个随手拼的路径把别的东西删了
+  const roots = gameRoots();
+  const safe = roots.some(r => path.dirname(path.resolve(dir)) === path.resolve(r));
+  if (!safe) throw new Error('非法实例路径: ' + dir);
   await fsp.rm(dir, { recursive: true, force: true });
+  forgetInstanceDir(id);
   return { ok: true };
 }
 
@@ -111,9 +133,10 @@ export async function duplicateInstance(id, newName) {
     name: newName || (src.name + ' 副本'), version: src.version, loader: src.loader,
     loaderVersion: src.loaderVersion, versionId: src.versionId,
     memory: src.memory, jvmPreset: src.jvmPreset,
+    rootDir: path.dirname(src.dir),          // 副本落在原实例所在的根，不要偷偷换盘
   });
-  const srcDir = path.join(INSTANCES, id);
-  const dstDir = path.join(INSTANCES, n.id);
+  const srcDir = P.instance(id);
+  const dstDir = P.instance(n.id);
   for (const sub of ['mods', 'resourcepacks', 'shaderpacks', 'config', 'saves']) {
     await fsp.cp(path.join(srcDir, sub), path.join(dstDir, sub), { recursive: true }).catch(() => { });
   }
@@ -163,11 +186,11 @@ function prettyName(base) {
 const SOURCES_FILE = 'nova-sources.json';
 
 async function readSources(instanceId) {
-  return (await readJson(path.join(INSTANCES, instanceId, SOURCES_FILE), {})) || {};
+  return (await readJson(path.join(P.instance(instanceId), SOURCES_FILE), {})) || {};
 }
 
 export async function writeSource(instanceId, kind, filename, info) {
-  const file = path.join(INSTANCES, instanceId, SOURCES_FILE);
+  const file = path.join(P.instance(instanceId), SOURCES_FILE);
   const db = (await readJson(file, {})) || {};
   db[`${KINDS[kind].dir}/${filename}`] = info;
   await writeJson(file, db);
@@ -261,7 +284,7 @@ async function readJarMeta(file) {
 export async function listContents(instanceId, kind) {
   const k = KINDS[kind];
   if (!k) throw new Error('未知类型: ' + kind);
-  const dir = path.join(INSTANCES, instanceId, k.dir);
+  const dir = path.join(P.instance(instanceId), k.dir);
   await fsp.mkdir(dir, { recursive: true });
   const sources = await readSources(instanceId).catch(() => ({}));
   const out = [];
@@ -310,7 +333,7 @@ export async function listContents(instanceId, kind) {
 
 export async function toggleContent(instanceId, kind, name) {
   const k = KINDS[kind];
-  const dir = path.join(INSTANCES, instanceId, k.dir);
+  const dir = path.join(P.instance(instanceId), k.dir);
   let src = path.join(dir, name);
   // 宽容处理：传基名或带 .disabled 的名字都能找到目标文件
   if (!existsSync(src)) {
@@ -328,7 +351,7 @@ export async function toggleContent(instanceId, kind, name) {
 
 export async function deleteContent(instanceId, kind, name) {
   const k = KINDS[kind];
-  const dir = path.join(INSTANCES, instanceId, k.dir);
+  const dir = path.join(P.instance(instanceId), k.dir);
   const fp = path.join(dir, path.basename(name));
   if (!fp.startsWith(dir)) throw new Error('非法路径');
   await fsp.rm(fp, { recursive: true, force: true });
@@ -337,7 +360,7 @@ export async function deleteContent(instanceId, kind, name) {
 
 export async function importContent(instanceId, kind, srcPath) {
   const k = KINDS[kind];
-  const dir = path.join(INSTANCES, instanceId, k.dir);
+  const dir = path.join(P.instance(instanceId), k.dir);
   await fsp.mkdir(dir, { recursive: true });
   const base = path.basename(srcPath);
   const dst = path.join(dir, base);
@@ -497,7 +520,7 @@ export async function mrInstall(instanceId, kind, projectId, { versionId = null,
     return { installed: [], version: null };
   }
   const chain = [..._chain, projectId];
-  const dir = path.join(INSTANCES, instanceId, k.dir);
+  const dir = path.join(P.instance(instanceId), k.dir);
   await fsp.mkdir(dir, { recursive: true });
 
   // 项目元信息：用于显示中文名 + 生成官网/MC百科跳转
@@ -700,7 +723,7 @@ export async function installMrpack(mrpackPath, { task, source = 'auto', concurr
 /** 把整合包的全部文件下载并展开到实例 */
 export async function materializeMrpack(instanceId, parsed, { task, source = 'auto', concurrency = 12 } = {}) {
   const { index, buf, entries } = parsed;
-  const dir = path.join(INSTANCES, instanceId);
+  const dir = P.instance(instanceId);
 
   // 1) files
   const files = (index.files || []).filter(f => !f.env?.client || f.env.client !== 'unsupported');
@@ -747,7 +770,7 @@ export async function materializeMrpack(instanceId, parsed, { task, source = 'au
 export async function materializeZipPack(instanceId, zipPath, { task } = {}) {
   const buf = await fsp.readFile(zipPath);
   const entries = zipEntries(buf);
-  const dir = path.join(INSTANCES, instanceId);
+  const dir = P.instance(instanceId);
   tstage(task, '解压整合包', entries.length);
   let n = 0;
   // CurseForge 风格：manifest.json + overrides/

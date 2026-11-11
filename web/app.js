@@ -712,6 +712,7 @@ async function newInstanceWizard() {
         </select>
       </div>
       <div class="field"><label>加载器版本</label><select id="niLoaderVer"><option value="">自动选择最新</option></select></div>
+      <div class="field"><label>存放位置</label><select id="niRoot"><option value="">默认游戏目录（数据目录里）</option></select></div>
     </div>
     <p class="hint" id="niHint">若所选版本尚未安装，创建时会自动下载。</p>`,
     {
@@ -720,8 +721,9 @@ async function newInstanceWizard() {
         const mcVersion = $('#niVer', box).value.trim();
         const loader = $('#niLoader', box).value;
         const loaderVersion = $('#niLoaderVer', box).value.trim() || undefined;
+        const rootDir = $('#niRoot', box).value || undefined;
         if (!/^[\w.\-+]+$/.test(mcVersion)) { toast('版本号格式不对', '例如 1.20.1', 'error'); return false; }
-        const r = await apiPost('/api/instances', { name, mcVersion, loader, loaderVersion });
+        const r = await apiPost('/api/instances', { name, mcVersion, loader, loaderVersion, rootDir });
         toast('开始创建实例', '看右下角任务进度', 'ok');
         closeModal();
         switchPage('home');
@@ -737,6 +739,15 @@ async function newInstanceWizard() {
     niMc.onchange = refresh;
     refresh();
   }
+  // 「存放位置」：有多挂的游戏目录才给选
+  apiGet('/api/system/game-dirs').then(r => {
+    const sel = $('#niRoot');
+    if (!sel) return;
+    const extra = (r.dirs || []).filter(d => !d.isDefault);
+    if (!extra.length) { sel.disabled = true; return; }
+    sel.innerHTML = '<option value="">默认游戏目录（数据目录里）</option>'
+      + extra.map(d => `<option value="${esc(d.path)}">${esc(d.path)}</option>`).join('');
+  }).catch(() => { });
   // 异步把官方版本清单补进下拉（失败就算了，已装版本仍然可选）
   buildMcVersionOptions(true).then(opts => {
     const sel = $('#niVer');
@@ -2533,6 +2544,31 @@ async function renderCfpaStatus() {
 
 /* ------------------------------------------------------------ 设置 */
 
+/* ---------------- 游戏目录（实例可以分散在多个盘） ---------------- */
+
+async function renderGameDirs() {
+  const box = $('#gameDirList');
+  if (!box) return;
+  try {
+    const r = await apiGet('/api/system/game-dirs');
+    const dirs = r.dirs || [];
+    const badge = $('#gameDirsBadge');
+    if (badge) badge.textContent = `${dirs.length} 个位置`;
+    box.innerHTML = dirs.map(d => `
+      <div class="game-dir-row${d.isDefault ? ' is-default' : ''}">
+        <div class="game-dir-main">
+          <div class="game-dir-path" title="${esc(d.path)}">${esc(d.path)}</div>
+          <div class="game-dir-meta">
+            ${d.isDefault ? '<b>默认</b> · ' : ''}${d.instances} 个实例${d.exists ? '' : ' · <b>目录不在了</b>'}
+          </div>
+        </div>
+        ${d.isDefault ? '' : `<button class="btn btn-soft btn-sm" data-del-game-dir="${esc(d.path)}">移除</button>`}
+      </div>`).join('');
+  } catch (e) {
+    box.innerHTML = `<p class="hint">读取失败：${esc(e.message)}</p>`;
+  }
+}
+
 function renderSettings() {
   const cfg = S.config || {};
   renderThemeGrid();
@@ -2560,6 +2596,7 @@ function renderSettings() {
 
   $('#setSource').value = cfg.source || 'auto';
   if ($('#setAutoBackup')) $('#setAutoBackup').checked = cfg.autoBackup !== false;
+  if ($('#setLaunchBackup')) $('#setLaunchBackup').value = cfg.launchBackup || 'all';
   if ($('#setCfKey') && cfg.curseforgeApiKey) $('#setCfKey').value = cfg.curseforgeApiKey;
   $('#setConcurrency').value = cfg.downloadConcurrency || 12;
   if ($('#setMultiLink')) $('#setMultiLink').checked = cfg.multiLink !== false;
@@ -2586,6 +2623,7 @@ function renderSettings() {
     ddBadge.textContent = isDefault ? '默认位置' : '自定义';
     ddBadge.className = 'badge' + (isDefault ? '' : ' ok');
   }
+  renderGameDirs();
 
   // Java 列表
   const jl = $('#javaList');
@@ -2844,6 +2882,29 @@ function bindEvents() {
     e.preventDefault();
     e.stopPropagation();
     openUrl(b.dataset.url);
+  }, true);
+
+  // 移除游戏目录：只是取消登记，磁盘上的游戏不动
+  document.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-del-game-dir]');
+    if (!b) return;
+    e.preventDefault();
+    const dir = b.dataset.delGameDir;
+    openModal(`<h2>移除这个游戏目录？</h2>
+      <p class="modal-sub"><code>${esc(dir)}</code></p>
+      <div class="notice warn">
+        只是从这个列表里去掉，<b>里面的游戏文件不会被删除</b>。
+        如果那个目录里有实例，移除后启动器就看不到它们了（重新加回来就能恢复）。
+      </div>`, {
+      okText: '确认移除', onOk: async () => {
+        try {
+          await apiPost('/api/system/game-dirs', { action: 'remove', dir });
+          toast('已移除', dir, 'ok');
+          renderGameDirs();
+          refreshAll().catch(() => { });
+        } catch (err) { toast('移除失败', err.message, 'error'); }
+      },
+    });
   }, true);
 
 
@@ -3332,6 +3393,15 @@ async function handleDroppedFiles(files) {
           v ? '每天第一次启动时自动存一份' : '仍可随时点「立即备份」', 'ok');
       } catch (err) { toast('保存失败', err.message, 'error'); }
     };
+    if ($('#setLaunchBackup')) $('#setLaunchBackup').onchange = async e => {
+      const v = e.target.value;
+      try {
+        await apiPost('/api/config', { launchBackup: v });
+        toast('已保存', v === 'off' ? '启动游戏时不再自动备份'
+          : v === 'instance' ? '每次启动前只备份这一个实例'
+            : '每次启动前备份所有实例', 'ok');
+      } catch (err) { toast('保存失败', err.message, 'error'); }
+    };
     renderBackups();
   }
 
@@ -3388,6 +3458,30 @@ async function handleDroppedFiles(files) {
     try { await apiPost('/api/system/clear-cache'); toast('已清理', '图标缓存已清空', 'ok'); }
     catch (e) { toast('清理失败', e.message, 'error'); }
   };
+
+  // 游戏目录：添加 / 移除（实例可以放多个盘）
+  if ($('#btnAddGameDir')) {
+    $('#btnAddGameDir').onclick = async () => {
+      const btn = $('#btnAddGameDir');
+      btn.disabled = true; btn.textContent = '选择中…';
+      let picked = null;
+      try {
+        const r = await apiPost('/api/system/pick-dir', { startPath: S.status?.dataDir || '' });
+        picked = r.dir;
+      } catch (e) {
+        if (!/已取消/.test(e.message)) toast('选择失败', e.message, 'error');
+        btn.disabled = false; btn.textContent = '添加游戏目录…';
+        return;
+      }
+      btn.disabled = false; btn.textContent = '添加游戏目录…';
+      try {
+        await apiPost('/api/system/game-dirs', { action: 'add', dir: picked });
+        toast('已添加', picked, 'ok');
+        renderGameDirs();
+        refreshAll().catch(() => { });
+      } catch (e) { toast('添加失败', e.message, 'error'); }
+    };
+  }
   $('#btnShowServerLog').onclick = async () => {
     try {
       const r = await apiGet('/api/system/server-log');

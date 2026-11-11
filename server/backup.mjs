@@ -12,11 +12,12 @@
 
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import { DATA, INSTANCES, CONFIG_FILE, readJson, writeJson, exists, zipCreate, zipEntries, zipRead } from './core.mjs';
+import { DATA, P, gameRoots, CONFIG_FILE, readJson, writeJson, exists, zipCreate, zipEntries, zipRead } from './core.mjs';
 
 const BACKUP_DIR = path.join(DATA, 'backups');
 const META_FILE = path.join(BACKUP_DIR, 'index.json');
-const KEEP = 10;                       // 最多留 10 份，超出删最老
+const KEEP = 10;                       // 每日/手动快照最多留 10 份，超出删最老
+const KEEP_LAUNCH = 6;                 // 启动前自动备份单独算，留最近 6 份
 const PER_FILE_CAP = 128 * 1024 * 1024; // 单个文件超 128MB 跳过（超大存档不硬扛）
 const WALL_BACKUP_CAP = 8 * 1024 * 1024; // 壁纸超过 8MB 就不进快照
 const AUTO_INTERVAL_MS = 24 * 3600 * 1000;
@@ -66,24 +67,39 @@ async function collectDir(entries, dir, zipPrefix, stats, depth = 0) {
   }
 }
 
-/** 列出 data/instances 下所有实例目录 */
+/** 列出所有游戏目录下的实例 id（多游戏目录时会有好几个根） */
 async function listInstanceDirs() {
-  let items = [];
-  try { items = await fsp.readdir(INSTANCES, { withFileTypes: true }); } catch { return []; }
-  return items.filter(it => it.isDirectory()).map(it => it.name);
+  const out = [];
+  for (const root of gameRoots()) {
+    let items = [];
+    try { items = await fsp.readdir(root, { withFileTypes: true }); } catch { continue; }
+    for (const it of items) if (it.isDirectory()) out.push(it.name);
+  }
+  return out;
 }
 
 /* ------------------------------------------------------------ 备份 */
 
-async function doBackup({ reason = '手动' } = {}) {
+/**
+ * @param reason    写进快照说明的原因
+ * @param instanceId 只备份这一个实例（启动前自动备份用）；不传就备份全部
+ * @param kind      launch | daily | manual —— 决定轮转时算进哪一类
+ */
+async function doBackup({ reason = '手动', instanceId = null, kind = null } = {}) {
   const entries = [];
   const stats = { files: 0, bytes: 0, skipped: 0, instances: 0 };
+  const only = instanceId || null;
+  const k = kind || (only ? 'launch' : 'manual');
 
-  await pushFile(entries, CONFIG_FILE, 'config.json', stats);
-  await pushFile(entries, path.join(DATA, 'downloads-history.json'), 'downloads-history.json', stats);
+  // 只备一个实例时，全局配置/主题/壁纸跟这次备份无关，别塞进去撑体积
+  if (!only) {
+    await pushFile(entries, CONFIG_FILE, 'config.json', stats);
+    await pushFile(entries, path.join(DATA, 'downloads-history.json'), 'downloads-history.json', stats);
+  }
 
-  for (const id of await listInstanceDirs()) {
-    const dir = path.join(INSTANCES, id);
+  const ids = await listInstanceDirs();
+  for (const id of (only ? ids.filter(x => x === only) : ids)) {
+    const dir = P.instance(id);
     const prefix = `instances/${id}`;
     let any = false;
     for (const f of ['instance.json', 'nova-sources.json', 'options.txt', 'servers.dat']) {
@@ -100,24 +116,26 @@ async function doBackup({ reason = '手动' } = {}) {
     if (any) stats.instances++;
   }
 
-  // 自定义主题：几 KB，但丢了得重写，必须进快照
-  await collectDir(entries, path.join(DATA, 'themes'), 'themes', stats);
+  if (!only) {
+    // 自定义主题：几 KB，但丢了得重写，必须进快照
+    await collectDir(entries, path.join(DATA, 'themes'), 'themes', stats);
 
-  // 壁纸只存当前在用的那一张，且太大的跳过（图片能重新选，不值当撑爆快照）
-  const cfg = (await readJson(CONFIG_FILE, {})) || {};
-  const wallFile = cfg.wallpaper && cfg.wallpaper.file;
-  if (wallFile && /^wall-[a-f0-9]{8,20}\.\w+$/i.test(wallFile)) {
-    const fp = path.join(DATA, 'wallpapers', wallFile);
-    try {
-      const st = await fsp.stat(fp);
-      if (st.size <= WALL_BACKUP_CAP) {
-        entries.push({ name: 'wallpapers/' + wallFile, data: await fsp.readFile(fp) });
-        stats.files++;
-        stats.bytes += st.size;
-      } else {
-        stats.skipped++;
-      }
-    } catch { /* 图片不在就算了 */ }
+    // 壁纸只存当前在用的那一张，且太大的跳过（图片能重新选，不值当撑爆快照）
+    const cfg = (await readJson(CONFIG_FILE, {})) || {};
+    const wallFile = cfg.wallpaper && cfg.wallpaper.file;
+    if (wallFile && /^wall-[a-f0-9]{8,20}\.\w+$/i.test(wallFile)) {
+      const fp = path.join(DATA, 'wallpapers', wallFile);
+      try {
+        const st = await fsp.stat(fp);
+        if (st.size <= WALL_BACKUP_CAP) {
+          entries.push({ name: 'wallpapers/' + wallFile, data: await fsp.readFile(fp) });
+          stats.files++;
+          stats.bytes += st.size;
+        } else {
+          stats.skipped++;
+        }
+      } catch { /* 图片不在就算了 */ }
+    }
   }
 
   // 全是空的就别产出垃圾文件
@@ -132,15 +150,26 @@ async function doBackup({ reason = '手动' } = {}) {
 
   const buf = zipCreate(entries);
   await fsp.mkdir(BACKUP_DIR, { recursive: true });
-  const file = `snapshot-${stamp()}.zip`;
+  // 时间戳只到秒，同一秒内连打两次会互相覆盖（启动前备份很容易撞上），加个序号避开
+  let file = `snapshot-${stamp()}.zip`;
+  for (let n = 1; await exists(path.join(BACKUP_DIR, file)); n++) {
+    file = `snapshot-${stamp()}-${n}.zip`;
+  }
   await fsp.writeFile(path.join(BACKUP_DIR, file), buf);
 
   const db = await readIndex();
   db.items.unshift({
-    file, size: buf.length, time: Date.now(), reason,
+    file, size: buf.length, time: Date.now(), reason, kind: k,
     files: stats.files, instances: stats.instances, skipped: stats.skipped,
+    scope: only || 'all',
   });
-  // 轮转：只留最近 KEEP 份
+  // 轮转分两类算：启动前备份很频繁，不该把每日快照挤掉
+  const launch = db.items.filter(it => it.kind === 'launch');
+  while (launch.length > KEEP_LAUNCH) {
+    const dead = launch.pop();
+    db.items = db.items.filter(x => x.file !== dead.file);
+    try { await fsp.unlink(path.join(BACKUP_DIR, dead.file)); } catch { }
+  }
   while (db.items.length > KEEP) {
     const dead = db.items.pop();
     try { await fsp.unlink(path.join(BACKUP_DIR, dead.file)); } catch { }
@@ -176,8 +205,10 @@ export async function listBackups() {
     out.push({
       file: f,
       size,
-      time: meta.time || Number((f.match(/-(\d{8})-(\d{6})\.zip$/) || []).slice(1, 3).join('')) || 0,
+      time: meta.time || Number((f.match(/-(\d{8})-(\d{6})(?:-\d+)?\.zip$/) || []).slice(1, 3).join('')) || 0,
       reason: meta.reason || '未知',
+      kind: meta.kind || null,
+      scope: meta.scope || null,
       files: meta.files ?? null,
       instances: meta.instances ?? null,
     });

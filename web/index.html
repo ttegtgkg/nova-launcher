@@ -523,6 +523,18 @@
               <input type="checkbox" id="setAutoBackup" checked>
               <span>每天自动备份一次（存档丢了能救回来）</span>
             </label>
+            <div class="field">
+              <label for="setLaunchBackup">启动游戏前自动备份</label>
+              <select id="setLaunchBackup">
+                <option value="all">备份所有实例（默认）</option>
+                <option value="instance">只备份这次要启动的实例</option>
+                <option value="off">不备份</option>
+              </select>
+              <p class="hint">
+                每按一次「启动游戏」就先打一份快照。这类快照单独轮转，最多留 6 份，
+                不会把上面的每日备份挤掉。存档特别大的话选「只备份当前实例」更省时间。
+              </p>
+            </div>
             <div class="row-gap">
               <button class="btn btn-primary btn-sm" id="btnBackupNow">立即备份</button>
               <button class="btn btn-soft btn-sm" id="btnBackupOpen">打开备份文件夹</button>
@@ -552,6 +564,21 @@
               <button class="btn btn-soft btn-sm" data-open="cache">缓存</button>
             </div>
             <p class="hint">游戏本体、依赖库、资源文件在「共享库」里由所有实例共用；实例之间互相隔离。</p>
+          </div>
+
+          <div class="card pad">
+            <div class="card-head">
+              <h3>游戏目录</h3>
+              <span class="badge" id="gameDirsBadge">1 个位置</span>
+            </div>
+            <p class="hint">
+              实例默认放在数据目录里。想分开放（比如 D 盘一个、移动硬盘一个）就在这里多挂几个目录，
+              新建实例时可以选放哪一个。移除只是取消登记，<b>不会删掉里面的游戏</b>。
+            </p>
+            <div id="gameDirList" class="game-dir-list"><p class="hint">读取中…</p></div>
+            <div class="row-gap">
+              <button class="btn btn-primary btn-sm" id="btnAddGameDir">添加游戏目录…</button>
+            </div>
           </div>
 
           <div class="card pad">

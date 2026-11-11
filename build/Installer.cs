@@ -1,4 +1,4 @@
-﻿// Nova Launcher 安装程序（C# 5 / WinForms，用系统自带 csc.exe 编译）
+// Nova Launcher 安装程序（C# 5 / WinForms，用系统自带 csc.exe 编译）
 // 编译：csc /target:winexe /out:... /resource:payload.zip,payload.zip Installer.cs
 using System;
 using System.Diagnostics;
@@ -134,6 +134,16 @@ namespace NovaSetup
                 report(30, "安装启动器文件 ...");
                 string srcApp = Path.Combine(unpack, "app");
                 string dstApp = Path.Combine(dir, "app");
+                // 旧版本把数据目录标记错写在 app\ 里，等下整个 app 要被删掉重建，
+                // 先把用户改过的设置搬到安装根，否则升级一次就丢一次
+                try
+                {
+                    string markerRoot = Path.Combine(dir, ".nova-data-dir");
+                    string markerOld = Path.Combine(dstApp, ".nova-data-dir");
+                    if (!File.Exists(markerRoot) && File.Exists(markerOld))
+                        File.Copy(markerOld, markerRoot, true);
+                }
+                catch { }
                 if (Directory.Exists(dstApp)) Directory.Delete(dstApp, true);
                 CopyDir(srcApp, dstApp);
 
@@ -191,10 +201,14 @@ namespace NovaSetup
                 WriteLauncher(dir);
                 WriteUninstallStub(dir);
                 // 让数据目录固定落在程序目录外（app\..\data），
-                // 这样无论用快捷方式还是直接跑 node，都不会把 data 建到 app 里面
+                // 这样无论用快捷方式还是直接跑 node，都不会把 data 建到 app 里面。
+                // 标记写安装根而不是 app\：app 每次安装都会被擦掉重建。
+                // 已存在就不覆盖 —— 那是用户自己选过的位置，重装不该改回去。
                 try
                 {
-                    File.WriteAllText(Path.Combine(dstApp, ".nova-data-dir"), "..\\data", new System.Text.UTF8Encoding(false));
+                    string markerRoot = Path.Combine(dir, ".nova-data-dir");
+                    if (!File.Exists(markerRoot))
+                        File.WriteAllText(markerRoot, "data", new System.Text.UTF8Encoding(false));
                 }
                 catch { }
 

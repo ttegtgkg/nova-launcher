@@ -394,6 +394,38 @@ CurseForge 的 API Key 属于敏感信息，**不会明文落盘**：
 快照内容：`config.json`、每个实例的 `instance.json` / `nova-sources.json` / `options.txt` / `servers.dat` /
 `saves/`、`themes/`、当前壁纸。**不含**游戏本体、依赖库、模组 jar（那些能重下）。
 
+快照分三类，轮转分开算：
+
+| kind | 何时产生 | 保留 |
+|---|---|---|
+| `launch` | 每次启动游戏前（`launchBackup` 不是 `off` 时） | 最近 6 份 |
+| `daily` | 每天第一次启动器 | 与其他共 10 份 |
+| `manual` | 「立即备份」按钮 | 与其他共 10 份 |
+
+`launch` 类是**单实例快照**（`scope` 字段是实例 id），只装那个实例的文件，
+不塞 `config.json` / 主题 / 壁纸。文件名撞上同一秒时自动追加 `-1`、`-2` 序号。
+
+---
+
+### 3.14b 存储位置（数据目录 / 游戏目录）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/system/data-dir` | 当前数据目录、默认目录、标记文件路径 |
+| POST | `/api/system/data-dir` | 改数据目录，body `{ dir, migrate? }`。**要重启启动器生效** |
+| POST | `/api/system/pick-dir` | 弹系统文件夹选择框，返回 `{ dir }`（浏览器拿不到真实路径，只能后端弹） |
+| GET | `/api/system/game-dirs` | 所有游戏目录（默认的 + 额外挂的），每个带实例数 |
+| POST | `/api/system/game-dirs` | body `{ action, dir }`：`add` / `remove` |
+
+**移除游戏目录只是取消登记，不删任何文件** —— 加回来自动恢复。
+
+`POST /api/instances` 支持 `rootDir` 指定实例建在哪个游戏目录，
+必须是已登记的目录之一，否则报「这个目录还没添加成游戏目录」。
+
+数据目录标记文件（`.nova-data-dir`）由外壳通过环境变量 `NOVA_MARKER` 指定位置：
+安装版放在**安装根**而不是 `安装根\app` 里 —— 重装只会擦掉 `app`，标记留得住，
+用户改过的路径不会因为升级一次就丢。升级时安装程序还会把旧位置（`app\` 里）的标记搬出来。
+
 ---
 
 ### 3.15 中文与搜索索引

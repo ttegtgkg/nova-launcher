@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import {
   ROOT, DATA, SHARED, INSTANCES, RUNTIME, CACHE, P, ensureDirs, loadConfig, saveConfig,
   createTask, taskPublic, listTasks, getTask, tlog, tstage, tprogress, tdone, tfail, redactConfig,
-  cancelTask, getHistory, clearHistory, taddFile, addBytes,
+  cancelTask, getHistory, clearHistory, taddFile, addBytes, MARKER_FILE, setExtraGameDirs, getExtraGameDirs, gameRoots,
   httpText, readJson, writeJson, existsSync, exists, downloadOne, totalMemoryMb, freeMemoryMb,
   dirSize, safeName, offlineUuid, httpBinary, zipCreate, collectDirEntries, zipExtractAll, zipEntries, zipRead,
 } from './core.mjs';
@@ -271,6 +271,24 @@ async function doLaunch(instanceId) {
   (async () => {
     try {
       const source = cfg.source || 'auto';
+
+      // 每次启动前自动备份一次存档 —— 玩崩了还能退回来。
+      // 默认备全部实例；设置里可以改成只备当前实例，或者关掉。
+      const lb = cfg.launchBackup || 'all';
+      if (lb !== 'off') {
+        try {
+          tstage(task, '备份存档', 1);
+          const bk = await createBackup({
+            reason: `启动前自动备份（${inst.name}）`,
+            kind: 'launch',
+            instanceId: lb === 'instance' ? inst.id : null,
+          });
+          tlog(task, `已备份: ${bk.file}（${(bk.size / 1048576).toFixed(1)} MB）`);
+        } catch (e) {
+          tlog(task, '启动前备份失败（不影响启动）: ' + e.message);
+        }
+      }
+
       tstage(task, '检查游戏文件', 1);
       await ensureVersionReady(inst.versionId, task, source);
 
@@ -811,7 +829,7 @@ async function handleApi(req, res, url) {
     //    （只压自己的进程，绝不碰游戏 —— 压缩游戏只会让它更卡）
     const mem = await optimizeMemory({
       dataDir: DATA,
-      instanceDir: inst ? inst.dir || path.join(INSTANCES, inst.id) : '',
+      instanceDir: inst ? inst.dir || P.instance(inst.id) : "",
       runningPid: state.running?.pid || null,
     }).catch(e => ({ error: e.message, orphans: { found: 0, killed: 0, freedMb: 0 }, trimmed: { count: 0, freedMb: 0 }, freedMb: 0 }));
 
@@ -834,11 +852,12 @@ async function handleApi(req, res, url) {
   /* ---- 数据目录（自选存储位置） ---- */
   if (p === '/api/system/data-dir' && req.method === 'GET') {
     let marker = null;
-    try { marker = (await fsp.readFile(path.join(ROOT, '.nova-data-dir'), 'utf8')).trim(); } catch { }
+    try { marker = (await fsp.readFile(MARKER_FILE(), 'utf8')).trim(); } catch { }
     return ok(res, {
       dir: DATA,
       defaultDir: path.join(ROOT, 'data'),
       root: ROOT,
+      markerFile: MARKER_FILE(),
       marker,
       fromEnv: !!process.env.NOVA_DATA_DIR,     // 安装版由外壳传环境变量，此时改标记文件无效
     });
@@ -900,7 +919,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
       return fail(res, '这个目录不可写: ' + e.message);
     }
 
-    await fsp.writeFile(path.join(ROOT, '.nova-data-dir'), dir, 'utf8');
+    await fsp.writeFile(MARKER_FILE(), dir, 'utf8');
 
     // 可选：把现有数据搬过去（后台任务，大目录会跑很久）
     let task = null;
@@ -935,6 +954,73 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
       restartRequired: true,
       task: task ? taskPublic(task) : null,
     });
+  }
+
+  /* ---- 游戏目录（实例可以分散在多个盘） ---- */
+  if (p === '/api/system/game-dirs' && req.method === 'GET') {
+    const extra = getExtraGameDirs();
+    const stat = async (dir, isDefault) => {
+      let n = 0;
+      try {
+        const items = await fsp.readdir(dir, { withFileTypes: true });
+        for (const it of items) {
+          if (!it.isDirectory()) continue;
+          if (existsSync(path.join(dir, it.name, 'instance.json'))) n++;
+        }
+      } catch { /* 目录不在了 */ }
+      return { path: dir, isDefault: !!isDefault, instances: n, exists: existsSync(dir) };
+    };
+    const rows = [await stat(INSTANCES, true)];
+    for (const d of extra) rows.push(await stat(d, false));
+    return ok(res, { defaultDir: INSTANCES, dirs: rows });
+  }
+  if (p === '/api/system/game-dirs' && req.method === 'POST') {
+    const action = String(body.action || 'add');
+    const extra = getExtraGameDirs();
+
+    if (action === 'add') {
+      const raw = String(body.dir || '').trim();
+      if (!raw) return fail(res, '缺少目录');
+      const dir = path.resolve(raw);
+      if (dir === path.resolve(INSTANCES)) return fail(res, '这就是默认游戏目录');
+      if (extra.includes(dir)) return fail(res, '这个目录已经添加过了');
+
+      // 和「数据目录」同一套规矩：系统目录、盘符根目录一律拒绝
+      const sysRoots = [process.env.SystemRoot, process.env.windir,
+        process.env.ProgramFiles, process.env['ProgramFiles(x86)'], process.env.ProgramData]
+        .filter(Boolean).map(s => path.resolve(s).toLowerCase());
+      const low = dir.toLowerCase();
+      const hit = sysRoots.find(s => low === s || low.startsWith(s + '\\'));
+      if (hit) return fail(res, `不能放在系统目录（${hit}）里，换一个自己的文件夹`);
+      if (/^[a-z]:\\?$/i.test(dir)) return fail(res, '不能直接选盘符根目录，请建一个子文件夹');
+      if (dir === path.resolve(ROOT) || dir === path.resolve(DATA)) return fail(res, '不能选程序目录或数据目录本身');
+
+      try {
+        const st = await fsp.stat(dir).catch(() => null);
+        if (st && !st.isDirectory()) return fail(res, '目标是一个文件，不是文件夹');
+        await fsp.mkdir(dir, { recursive: true });
+        await fsp.access(dir, fs.constants.W_OK);
+      } catch (e) { return fail(res, '这个目录不可写: ' + e.message); }
+
+      const next = [...extra, dir];
+      await saveConfig({ gameDirs: next });
+      setExtraGameDirs(next);
+      await listInstances().catch(() => []);
+      return ok(res, { dirs: next, added: dir });
+    }
+
+    if (action === 'remove') {
+      const dir = path.resolve(String(body.dir || '').trim());
+      const next = extra.filter(d => d !== dir);
+      if (next.length === extra.length) return fail(res, '这个目录不在列表里');
+      // 只取消登记，不动磁盘上的游戏 —— 万一用户只是想换个入口，文件不该被牵连
+      await saveConfig({ gameDirs: next });
+      setExtraGameDirs(next);
+      await listInstances().catch(() => []);
+      return ok(res, { dirs: next, removed: dir });
+    }
+
+    return fail(res, '未知操作: ' + action);
   }
 
   if (p === '/api/system/open' && req.method === 'POST') {
@@ -1222,7 +1308,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
   /* ---- 实例 ---- */
   if (p === '/api/instances') {
     if (req.method === 'POST') {
-      const { name, mcVersion, loader, loaderVersion, install, versionId: explicitVid } = body;
+      const { name, mcVersion, loader, loaderVersion, install, versionId: explicitVid, rootDir } = body;
       const cfg = await loadConfig();
 
       // 直接用一个已安装的版本建实例（含 Fabric/Forge 等加载器版本）
@@ -1253,6 +1339,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
               name: name || explicitVid, version: parent, loader: ldr,
               loaderVersion: lver, versionId: explicitVid,
               memory: recommendMemoryMb(), jvmPreset: 'aikar',
+              rootDir: rootDir || null,
             });
             await saveConfig({ lastInstance: inst.id });
             tdone(task, inst);
@@ -1307,6 +1394,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
             name, version: mcVersion, loader: loader || 'vanilla',
             loaderVersion: lver, versionId: vid,
             memory: recommendMemoryMb(), jvmPreset: 'aikar',
+            rootDir: rootDir || null,
           });
           await saveConfig({ lastInstance: inst.id });
           tdone(task, inst);
@@ -1863,7 +1951,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
     if (!inst || !kind) return fail(res, '缺少 instance/kind');
     const k = KINDS[kind];
     if (!k) return fail(res, '未知类型');
-    const dir = path.join(INSTANCES, inst, k.dir);
+    const dir = path.join(P.instance(inst), k.dir);
     await fsp.mkdir(dir, { recursive: true });
     const dest = path.join(dir, safeName(filename));
     await new Promise((resolve, reject) => {
@@ -2277,6 +2365,13 @@ const server = http.createServer(async (req, res) => {
 
 async function main() {
   await ensureDirs();
+  // 先把用户配置的额外游戏目录装进内存，再扫一遍把 id→目录 映射建起来，
+  // 否则第一批请求会把别的盘上的实例当成不存在
+  {
+    const cfg = await loadConfig();
+    setExtraGameDirs(cfg.gameDirs || []);
+    await listInstances().catch(() => []);
+  }
   await getJavas();
   server.listen(PORT, HOST, () => {
     const line = `  Nova Launcher 已启动  →  http://${HOST}:${PORT}`;

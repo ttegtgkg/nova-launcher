@@ -1,4 +1,4 @@
-﻿// Nova Launcher 桌面外壳（C# 5 / WinForms + WebView2）
+// Nova Launcher 桌面外壳（C# 5 / WinForms + WebView2）
 // 作用：把本地 Node 服务和界面装进一个独立窗口，用户不需要也不应该看到浏览器。
 // 编译：csc /target:winexe /out:NovaLauncher.exe /reference:... Shell.cs
 using System;
@@ -82,6 +82,8 @@ namespace NovaShell
         private Process _server;
         private readonly string _root;
         private readonly string _dataDir;
+        // 设置页「更改数据目录」要写的标记文件（安装根，重装不删）
+        private readonly string _marker;
         private readonly bool _devMode;
         private int _port = Cfg.DefaultPort;
         // 本地接口令牌：每次启动重新生成，只经环境变量与 URL 传递，不落盘
@@ -95,16 +97,33 @@ namespace NovaShell
         /// 这个文件由设置页「更改数据目录」写入，改完重启生效 ——
         /// 以前这里硬编码 _root\data，标记文件形同虚设。
         /// </summary>
+        /// <summary>
+        /// 找标记文件，并给出解析相对路径时该以谁为基准。
+        /// 安装版 exe 在安装根、程序在 &lt;根&gt;\app，旧版本把标记错写进了 app 里
+        /// （安装程序擦掉 app 重建，用户改过的数据目录就没了），这里两种位置都认。
+        /// 新位置统一放安装根 —— 重装只删 app，标记留得住。
+        /// </summary>
+        private static string MarkerPath(string root, out string baseDir)
+        {
+            string atRoot = Path.Combine(root, ".nova-data-dir");
+            if (File.Exists(atRoot)) { baseDir = root; return atRoot; }
+            string atApp = Path.Combine(root, "app", ".nova-data-dir");
+            if (File.Exists(atApp)) { baseDir = Path.Combine(root, "app"); return atApp; }
+            baseDir = root;
+            return atRoot;
+        }
+
         private static string ResolveDataDir(string root)
         {
             string fallback = Path.Combine(root, "data");
             try
             {
-                string marker = Path.Combine(root, ".nova-data-dir");
+                string baseDir;
+                string marker = MarkerPath(root, out baseDir);
                 if (!File.Exists(marker)) return fallback;
                 string s = File.ReadAllText(marker).Trim().Trim('"');
                 if (s.Length == 0) return fallback;
-                string p = Path.IsPathRooted(s) ? s : Path.GetFullPath(Path.Combine(root, s));
+                string p = Path.IsPathRooted(s) ? s : Path.GetFullPath(Path.Combine(baseDir, s));
                 Directory.CreateDirectory(p);
                 return p.TrimEnd('\\');
             }
@@ -115,6 +134,10 @@ namespace NovaShell
         {
             _root = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
             _dataDir = ResolveDataDir(_root);
+            {
+                string baseDir;
+                _marker = MarkerPath(_root, out baseDir);
+            }
             _devMode = Array.IndexOf(args, "--dev") >= 0;
             if (Array.IndexOf(args, "--port") >= 0)
             {
@@ -257,6 +280,8 @@ namespace NovaShell
             psi.EnvironmentVariables["NOVA_PORT"] = _port.ToString();
             psi.EnvironmentVariables["NOVA_TOKEN"] = _token;
             try { psi.EnvironmentVariables["NOVA_DATA_DIR"] = _dataDir; } catch { }
+            // 告诉 Node 标记文件该写哪儿：安装根，而不是重装会被擦掉的 app\
+            try { psi.EnvironmentVariables["NOVA_MARKER"] = _marker; } catch { }
 
             try
             {

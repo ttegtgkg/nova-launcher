@@ -21,17 +21,33 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const ROOT = path.resolve(__dirname, '..');
 
 /**
+ * 数据目录标记文件在哪。
+ * 外壳启动时通过 NOVA_MARKER 指定 —— 安装版把它放在安装根，
+ * 而不是 <安装根>\app 里：重装只擦 app，标记留得住，用户改过的数据目录不会丢。
+ * 没有环境变量时（手动 node 起服务）按老规矩读程序目录，再兼容一次 app\ 里的旧位置。
+ */
+export function MARKER_FILE() {
+  if (process.env.NOVA_MARKER) return path.resolve(process.env.NOVA_MARKER);
+  const atRoot = path.join(ROOT, '.nova-data-dir');
+  try { if (fs.statSync(atRoot).isFile()) return atRoot; } catch { /* 继续找 */ }
+  const atApp = path.join(ROOT, 'app', '.nova-data-dir');
+  try { if (fs.statSync(atApp).isFile()) return atApp; } catch { /* 都没有 */ }
+  return atRoot;
+}
+
+/**
  * 数据目录解析优先级：
  *   1. 环境变量 NOVA_DATA_DIR（临时覆盖）
- *   2. 程序目录下的 .nova-data-dir 标记文件（安装版由安装器写入 "..\data"）
+ *   2. 标记文件 .nova-data-dir（由外壳或设置页写入）
  *   3. 默认 <程序目录>/data（开发时就是项目根下的 data）
  * 安装版把数据放在程序目录之外，卸载/覆盖安装程序文件不会碰到游戏数据。
  */
 function resolveDataDir() {
   if (process.env.NOVA_DATA_DIR) return path.resolve(process.env.NOVA_DATA_DIR);
   try {
-    const marker = fs.readFileSync(path.join(ROOT, '.nova-data-dir'), 'utf8').trim();
-    if (marker) return path.resolve(ROOT, marker);
+    const mf = MARKER_FILE();
+    const marker = fs.readFileSync(mf, 'utf8').trim();
+    if (marker) return path.resolve(path.dirname(mf), marker);
   } catch { /* 没有标记文件，用默认 */ }
   return path.join(ROOT, 'data');
 }
@@ -43,11 +59,31 @@ export const RUNTIME = path.join(DATA, 'runtime');     // 自动下载的 java
 export const CACHE = path.join(DATA, 'cache');         // 图标等缓存
 export const CONFIG_FILE = path.join(DATA, 'config.json');
 
+/**
+ * 实例 id → 真实目录。
+ * 支持多个游戏目录之后，实例可能不在默认的 <数据>/instances 里。
+ * 把映射记在这里，P.instance() 先查它 —— 项目里几十处 path.join(INSTANCES, id)
+ * 就都不用逐个改成异步查找了。
+ */
+const _instDirs = new Map();
+export function registerInstanceDir(id, dir) { if (id && dir) _instDirs.set(id, dir); }
+export function forgetInstanceDir(id) { _instDirs.delete(id); }
+
+let _extraGameDirs = [];
+export function setExtraGameDirs(list) {
+  _extraGameDirs = (Array.isArray(list) ? list : [])
+    .filter(x => typeof x === 'string' && x.trim())
+    .map(x => path.resolve(x.trim()));
+}
+export function getExtraGameDirs() { return _extraGameDirs.slice(); }
+/** 所有可能的实例根目录，默认的排最前 */
+export function gameRoots() { return [INSTANCES, ..._extraGameDirs]; }
+
 export const P = {
   versions: path.join(SHARED, 'versions'),
   libraries: path.join(SHARED, 'libraries'),
   assets: path.join(SHARED, 'assets'),
-  instance: (id) => path.join(INSTANCES, id),
+  instance: (id) => _instDirs.get(id) || path.join(INSTANCES, id),
 };
 
 export async function ensureDirs() {
@@ -84,6 +120,8 @@ export const DEFAULTS = {
   autoOptimize: true,        // 启动时自动内存优化
   autoInstallJava: true,     // 缺少合适的 Java 时自动下载安装
   autoBackup: true,          // 每天自动打一份数据快照
+  launchBackup: 'all',       // 每次启动游戏前的自动备份：all 全部实例 / instance 仅当前 / off 关闭
+  gameDirs: [],              // 额外的游戏目录（除默认 <数据>/instances 之外，可放多个盘）
   curseforgeApiKey: '',      // CurseForge 官方 API Key（可选，申请后填这里）
   closeLauncherOnPlay: false,
   showSnapshots: false,

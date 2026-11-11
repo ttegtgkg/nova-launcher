@@ -19,7 +19,7 @@
 
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import { INSTANCES, zipEntries, zipRead } from './core.mjs';
+import { P, zipEntries, zipRead } from './core.mjs';
 
 /** 游戏 / 加载器自带，永远不可能是「缺失的模组」 */
 const BUILTIN = new Set([
@@ -183,7 +183,7 @@ const KIND_DIR = { mod: 'mods', resourcepack: 'resourcepacks', shader: 'shaderpa
  * 返回 { scanned, provided: [modId], missing: [{ modId, range, neededBy: [文件名] }], issues }
  */
 export async function checkInstanceDeps(instanceId, { kind = 'mod' } = {}) {
-  const dir = path.join(INSTANCES, instanceId, KIND_DIR[kind] || 'mods');
+  const dir = path.join(P.instance(instanceId), KIND_DIR[kind] || 'mods');
   let files = [];
   try {
     files = (await fsp.readdir(dir)).filter(f => /\.jar$/i.test(f) && !/\.disabled$/i.test(f));

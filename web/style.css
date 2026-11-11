@@ -1644,3 +1644,28 @@ html[data-wallpaper="off"] .wallpaper { display: none; }
   white-space: nowrap;
   user-select: text;
 }
+
+/* ---- 游戏目录列表（多位置） ---- */
+.game-dir-list { display: flex; flex-direction: column; gap: 7px; margin: 10px 0 12px; }
+.game-dir-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--stroke);
+}
+.game-dir-row.is-default { border-color: color-mix(in srgb, var(--accent) 40%, var(--stroke)); }
+.game-dir-main { flex: 1; min-width: 0; }
+.game-dir-path {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
+}
+.game-dir-meta { font-size: 11px; color: var(--text-faint); margin-top: 3px; }
+.game-dir-meta b { color: var(--text-dim); }
