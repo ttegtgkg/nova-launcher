@@ -166,7 +166,7 @@ async function readSources(instanceId) {
   return (await readJson(path.join(INSTANCES, instanceId, SOURCES_FILE), {})) || {};
 }
 
-async function writeSource(instanceId, kind, filename, info) {
+export async function writeSource(instanceId, kind, filename, info) {
   const file = path.join(INSTANCES, instanceId, SOURCES_FILE);
   const db = (await readJson(file, {})) || {};
   db[`${KINDS[kind].dir}/${filename}`] = info;

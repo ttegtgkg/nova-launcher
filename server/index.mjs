@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import {
   ROOT, DATA, SHARED, INSTANCES, RUNTIME, CACHE, P, ensureDirs, loadConfig, saveConfig,
   createTask, taskPublic, listTasks, getTask, tlog, tstage, tprogress, tdone, tfail, redactConfig,
-  cancelTask, getHistory, clearHistory, taddFile,
+  cancelTask, getHistory, clearHistory, taddFile, addBytes,
   httpText, readJson, writeJson, existsSync, exists, downloadOne, totalMemoryMb, freeMemoryMb,
   dirSize, safeName, offlineUuid, httpBinary, zipCreate, collectDirEntries, zipExtractAll, zipEntries, zipRead,
 } from './core.mjs';
@@ -24,7 +24,7 @@ import {
   KINDS, listInstances, getInstance, createInstance, updateInstance, deleteInstance,
   duplicateInstance, listContents, toggleContent, deleteContent, importContent, ensureInstanceDirs,
   mrSearch, mrVersions, mrInstall, installMrpack, materializeMrpack, materializeZipPack,
-  instanceDir, installCfpaMod, cfpaStatus, mrProject, autoInstallMissingDeps,
+  instanceDir, installCfpaMod, cfpaStatus, mrProject, autoInstallMissingDeps, writeSource,
 } from './content.mjs';
 import { checkInstanceDeps } from './deps.mjs';
 import { cryptoStatus } from './secure.mjs';
