@@ -34,6 +34,35 @@ const NOVA_TOKEN = (() => {
   } catch { return ''; }
 })();
 
+/*
+ * 没令牌 = 不是从启动器窗口打开的（多半是手动在浏览器里敲了 127.0.0.1:7420）。
+ * 静态页面不需要令牌，所以能正常显示，但每个 /api/* 都会 401 ——
+ * 界面上看起来就是「所有东西都读取失败」，很容易误以为是坏了。
+ * 这里直接把话说清楚，别让用户对着一个半死的界面猜。
+ */
+if (!NOVA_TOKEN) {
+  document.documentElement.classList.add('no-token');
+  window.addEventListener('DOMContentLoaded', () => {
+    const box = document.createElement('div');
+    box.className = 'no-token-overlay';
+    box.innerHTML = `
+      <div class="nt-card">
+        <div class="nt-ico">🔒</div>
+        <h2>请从启动器打开</h2>
+        <p>
+          这个地址只接受桌面启动器窗口的访问。你大概是用浏览器直接敲了
+          <code>127.0.0.1</code> —— 本地服务带一次性令牌校验，浏览器手里没有令牌，
+          所以所有数据请求都会被拒绝（表现为「读取失败」）。
+        </p>
+        <p class="nt-hint">
+          关掉这个标签页，双击桌面上的 <b>Nova Launcher</b> 图标即可。
+          令牌每次启动都重新生成，不会写到磁盘上，也不会出现在历史记录里。
+        </p>
+      </div>`;
+    document.body.appendChild(box);
+  });
+}
+
 /** 给请求补上令牌头 */
 function withToken(init = {}) {
   if (!NOVA_TOKEN) return init;
@@ -452,6 +481,8 @@ function switchPage(name) {
   if (name === 'downloads') loadDownloads();
   if (name === 'instances') renderInstancesPage();
   if (name === 'settings') renderSettings();
+  // 记住当前页：刷新 / 重新打开会停在这一页，而不是退回首页
+  try { history.replaceState(null, '', location.pathname + location.search + '#' + name); } catch { }
   if (name === 'home') { renderHome(); renderOptimize(); }
 }
 
@@ -1656,17 +1687,79 @@ function renderInstancesPage() {
   }
 }
 
+/*
+ * 加载器图标。
+ * PCL 和 HMCL 都是靠图标一眼认出「这是 Forge 还是 Fabric」，
+ * 这里全部内联 SVG，不引外部图片（离线可用，也不用带令牌）。
+ */
+const LOADER_ICON = {
+  vanilla: `<svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 3.2l8 4.4v8.8L12 20.8 4 16.4V7.6L12 3.2z" fill="#7cb342"/>
+      <path d="M12 3.2l8 4.4-8 4.4-8-4.4 8-4.4z" fill="#aed581"/>
+      <path d="M4 7.6v8.8L12 20.8V12L4 7.6z" fill="#8d6e63"/>
+      <path d="M20 7.6v8.8L12 20.8V12l8-4.4z" fill="#6d4c41"/>
+    </svg>`,
+  forge: `<svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M3.5 6.5h17l-1.2 4.6H4.7L3.5 6.5z" fill="#b0bec5"/>
+      <path d="M6.6 11.1h10.8l-1.1 5.2H7.7l-1.1-5.2z" fill="#78909c"/>
+      <path d="M5.4 16.3h13.2V19H5.4z" fill="#546e7a"/>
+    </svg>`,
+  neoforge: `<svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M3.5 6.5h17l-1.2 4.6H4.7L3.5 6.5z" fill="#ffb74d"/>
+      <path d="M6.6 11.1h10.8l-1.1 5.2H7.7l-1.1-5.2z" fill="#f57c00"/>
+      <path d="M5.4 16.3h13.2V19H5.4z" fill="#e65100"/>
+    </svg>`,
+  fabric: `<svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="3.2" y="3.2" width="17.6" height="17.6" rx="3" fill="#f0d5b8"/>
+      <path d="M3.2 9h17.6M3.2 15h17.6" stroke="#c99b6d" stroke-width="1.6"/>
+      <path d="M9 3.2v17.6M15 3.2v17.6" stroke="#c99b6d" stroke-width="1.6" opacity=".55"/>
+    </svg>`,
+  quilt: `<svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="3.2" y="3.2" width="8.6" height="8.6" rx="1.6" fill="#ba68c8"/>
+      <rect x="12.2" y="3.2" width="8.6" height="8.6" rx="1.6" fill="#9575cd"/>
+      <rect x="3.2" y="12.2" width="8.6" height="8.6" rx="1.6" fill="#7986cb"/>
+      <rect x="12.2" y="12.2" width="8.6" height="8.6" rx="1.6" fill="#4fc3f7"/>
+    </svg>`,
+};
+function loaderIcon(loader) { return LOADER_ICON[loader] || LOADER_ICON.vanilla; }
+
+/** 游戏目录缩成一眼能认的样子：D:\...\MC → D:\MC */
+function shortDir(p) {
+  if (!p) return '';
+  const parts = String(p).replace(/[\\/]+$/, '').split(/[\\/]+/);
+  if (parts.length <= 1) return parts[0] || '';
+  const drive = parts[0];
+  const last = parts[parts.length - 1] === 'instances' ? parts[parts.length - 2] : parts[parts.length - 1];
+  return (drive + '\\…\\' + last).replace('\\\\…\\\\', '\\…\\');
+}
+
+/** 实例排序：PCL 的默认顺序是最近游玩，HMCL 提供名称/版本排序 */
+function sortInstances(list) {
+  const k = localStorage.getItem('nova.instSort') || 'recent';
+  const arr = list.slice();
+  const zh = (a, b) => String(a || '').localeCompare(String(b || ''), 'zh');
+  if (k === 'name') arr.sort((a, b) => zh(a.name, b.name));
+  else if (k === 'mc') arr.sort((a, b) => String(b.version || '').localeCompare(String(a.version || ''), 'zh', { numeric: true }));
+  else if (k === 'loader') arr.sort((a, b) => zh(a.loader, b.loader) || zh(a.name, b.name));
+  else arr.sort((a, b) => (b.lastPlayed || 0) - (a.lastPlayed || 0));
+  return arr;
+}
+
 function instanceCardHtml(inst) {
   const memMb = inst.memory || S.config.memory?.customMb || S.optimize?.recommendedMb || 0;
-  return `<div class="inst-card${inst.id === S.selected ? ' selected' : ''}" data-inst-open="${esc(inst.id)}">
+  const dirTag = inst.extraRoot
+    ? `<span class="inst-tag dir" title="${esc(inst.root || '')}">${esc(shortDir(inst.root))}</span>`
+    : '';
+  return `<div class="inst-card${inst.id === S.selected ? ' selected' : ''}" data-inst-open="${esc(inst.id)}" data-ctx="${esc(inst.id)}">
     <div class="inst-top">
-      <div class="inst-icon">${esc((inst.name || '?').trim().charAt(0).toUpperCase())}</div>
+      <div class="inst-icon loader-${esc(inst.loader || 'vanilla')}">${loaderIcon(inst.loader)}</div>
       <div class="inst-info">
         <div class="inst-name" title="${esc(inst.name)}">${esc(inst.name)}</div>
         <div class="inst-tags">
           <span class="inst-tag">MC ${esc(inst.version || '?')}</span>
           <span class="inst-tag loader">${esc(loaderName(inst.loader))}${inst.loaderVersion ? ' ' + esc(String(inst.loaderVersion).slice(0, 9)) : ''}</span>
           ${memMb ? `<span class="inst-tag">${memMb} MB</span>` : ''}
+          ${dirTag}
         </div>
       </div>
     </div>
@@ -1674,7 +1767,7 @@ function instanceCardHtml(inst) {
       <div class="inst-meta">${inst.lastPlayed ? '上次 ' + fmtTime(inst.lastPlayed) : '还没玩过'}${inst.playtimeSec ? ' · ' + fmtDur(inst.playtimeSec) : ''}</div>
       <div class="inst-actions">
         <button class="inst-play" data-play="${esc(inst.id)}"><svg viewBox="0 0 24 24"><path d="M7 4l13 8-13 8z"/></svg>启动</button>
-        <button class="inst-more" data-more="${esc(inst.id)}" title="更多">
+        <button class="inst-more" data-more="${esc(inst.id)}" title="设置（右键可直接打开）">
           <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
         </button>
       </div>
@@ -1685,12 +1778,22 @@ function instanceCardHtml(inst) {
 function renderInstanceListFull() {
   const grid = $('#instanceGridFull');
   if (!S.instances.length) {
+    // 空列表最常见的原因不是「真的没装游戏」，而是数据目录指错了 —— 直接把出路写出来
     grid.innerHTML = `<div class="empty"><div class="em-ico">◇</div>
       <div class="em-t">还没有任何实例</div>
-      <div class="em-d">点右上角「+ 新建实例」开始</div></div>`;
+      <div class="em-d">点右上角「+ 新建实例」开始</div>
+      <div class="em-extra">
+        之前在别处装过游戏？去 <b>设置 → 数据目录</b> 把路径指过去，
+        或者在 <b>设置 → 游戏目录</b> 里把那个文件夹挂进来 —— 游戏文件不会动，立刻就能看到。
+      </div></div>`;
     return;
   }
-  grid.innerHTML = S.instances.map(instanceCardHtml).join('');
+  const view = localStorage.getItem('nova.instView') || 'grid';
+  grid.classList.toggle('as-list', view === 'list');
+  $('#instViewToggle')?.querySelectorAll('[data-view]').forEach(b => {
+    b.classList.toggle('active', b.dataset.view === view);
+  });
+  grid.innerHTML = sortInstances(S.instances).map(instanceCardHtml).join('');
   $$('[data-inst-open]', grid).forEach(c => c.onclick = (e) => {
     if (e.target.closest('[data-play]') || e.target.closest('[data-more]')) return;
     INST.detailId = c.dataset.instOpen;
@@ -1701,6 +1804,11 @@ function renderInstanceListFull() {
   });
   $$('[data-play]', grid).forEach(b => b.onclick = (e) => { e.stopPropagation(); launch(b.dataset.play); });
   $$('[data-more]', grid).forEach(b => b.onclick = (e) => { e.stopPropagation(); instanceMenu(b.dataset.more); });
+  // 右键直接开设置，和 PCL 一样不用先点「更多」
+  $$('[data-ctx]', grid).forEach(c => c.oncontextmenu = (e) => {
+    e.preventDefault();
+    instanceMenu(c.dataset.ctx);
+  });
 }
 
 async function renderInstanceDetail() {
@@ -1709,7 +1817,7 @@ async function renderInstanceDetail() {
 
   const memMb = inst.memory || S.optimize?.recommendedMb || 0;
   $('#instHero').innerHTML = `
-    <div class="inst-hero-icon">${esc((inst.name || '?').trim().charAt(0).toUpperCase())}</div>
+    <div class="inst-hero-icon loader-${esc(inst.loader || 'vanilla')}">${loaderIcon(inst.loader)}</div>
     <div class="inst-hero-main">
       <div class="inst-hero-name">${esc(inst.name)}</div>
       <div class="inst-hero-meta">
@@ -3149,6 +3257,22 @@ async function handleDroppedFiles(files) {
   refreshCfStatus();
 
   if ($('#btnNewInst2')) $('#btnNewInst2').onclick = newInstanceWizard;
+  // 实例列表：排序 / 卡片·列表切换
+  if ($('#instSort')) {
+    $('#instSort').value = localStorage.getItem('nova.instSort') || 'recent';
+    $('#instSort').onchange = e => {
+      localStorage.setItem('nova.instSort', e.target.value);
+      renderInstanceListFull();
+    };
+  }
+  if ($('#instViewToggle')) {
+    $('#instViewToggle').onclick = e => {
+      const b = e.target.closest('[data-view]');
+      if (!b) return;
+      localStorage.setItem('nova.instView', b.dataset.view);
+      renderInstanceListFull();
+    };
+  }
   if ($('#btnBackToList')) $('#btnBackToList').onclick = () => {
     INST.detailId = null;
     renderInstancesPage();
@@ -3589,7 +3713,12 @@ async function boot() {
     INST.detailId = instParam;
     if (qs.get('tab')) INST.tab = qs.get('tab');
   }
-  const initPage = qs.get('page');
+  // ?view=list 直接以列表视图打开实例页
+  const initView = qs.get('view');
+  if (initView === 'grid' || initView === 'list') localStorage.setItem('nova.instView', initView);
+
+  // ?page= 优先，其次看 hash（刷新后停在原来那一页）
+  const initPage = qs.get('page') || (location.hash || '').replace(/^#/, '');
   // ?page=store 是老链接（内容下载已并入下载页），一并接住
   if (initPage && (PAGE_META[initPage] || initPage === 'store')) switchPage(initPage);
 
