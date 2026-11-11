@@ -229,8 +229,10 @@ namespace NovaShell
             {
                 string url = "http://127.0.0.1:" + _port + "/?t=" + _token;
 
-                if (!_devMode && !IsPortOpen(_port))
+                if (!_devMode)
                 {
+                    // 先确认端口上是「我自己的服务」还是别人的/残留的，再决定用哪个端口
+                    PreparePort();
                     SetStatus("正在启动本地服务…");
                     if (!StartServer())
                     {
@@ -240,6 +242,7 @@ namespace NovaShell
                             + "或重新运行安装程序修复。");
                         return;
                     }
+                    url = "http://127.0.0.1:" + _port + "/?t=" + _token;
                 }
 
                 SetStatus("等待服务就绪…");
@@ -258,6 +261,89 @@ namespace NovaShell
             catch (Exception ex)
             {
                 ShowFatal("启动失败", ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// 端口被谁占着（0 = 查不到）。netstat -ano 最后一段就是 PID。
+        /// </summary>
+        private static int FindPortOwner(int port)
+        {
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo("netstat", "-ano");
+                psi.UseShellExecute = false;
+                psi.CreateNoWindow = true;
+                psi.RedirectStandardOutput = true;
+                using (Process p = Process.Start(psi))
+                {
+                    string outp = p.StandardOutput.ReadToEnd();
+                    p.WaitForExit(4000);
+                    string needle = ":" + port.ToString();
+                    foreach (string raw in outp.Split('\n'))
+                    {
+                        string line = raw.Trim();
+                        if (line.IndexOf(needle, StringComparison.Ordinal) < 0) continue;
+                        if (line.IndexOf("LISTENING", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                        string[] cols = line.Split(new char[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                        if (cols.Length < 5) continue;
+                        // 确认是本机回环地址上的这个端口，别被对端端口骗了
+                        if (cols[1].IndexOf(needle, StringComparison.Ordinal) < 0) continue;
+                        int pid;
+                        if (int.TryParse(cols[cols.Length - 1], out pid) && pid > 0) return pid;
+                    }
+                }
+            }
+            catch { }
+            return 0;
+        }
+
+        /// <summary>占用者是不是 node（这个默认端口是给本地服务专用的，node 监听它基本就是我自己的残留）</summary>
+        private static bool IsNodeProcess(int pid)
+        {
+            try
+            {
+                using (Process pr = Process.GetProcessById(pid))
+                    return string.Equals(pr.ProcessName, "node", StringComparison.OrdinalIgnoreCase);
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// 挑一个能用的端口。默认端口被别人占着的时候用，
+        /// 免得把自己的界面接到一个令牌完全不同的服务上。
+        /// </summary>
+        private static int FindFreePort(int start)
+        {
+            for (int p = start + 1; p < start + 40 && p < 65536; p++)
+                if (!IsPortOpen(p)) return p;
+            return start;
+        }
+
+        /// <summary>
+        /// 启动前把本地服务这一侧收拾干净。
+        /// 这里踩过一次坑：端口上已经有 node 在听，外壳就以为服务已经就绪，
+        /// 直接拿新生成的令牌去访问 —— 对面是上一次没退干净的服务，只认旧令牌，
+        /// 结果页面能出来、但每个 API 都是 401，看起来像"所有功能全坏了"。
+        /// </summary>
+        private void PreparePort()
+        {
+            if (!IsPortOpen(_port)) return;
+
+            int owner = FindPortOwner(_port);
+            if (owner > 0 && IsNodeProcess(owner))
+            {
+                // 我自己的残留：请它让位，否则令牌一定对不上
+                SetStatus("清理残留的本地服务…");
+                try { Process.GetProcessById(owner).Kill(); } catch { }
+                for (int i = 0; i < 60 && IsPortOpen(_port); i++)
+                    System.Threading.Thread.Sleep(100);
+            }
+            if (IsPortOpen(_port))
+            {
+                // 别人占着（不是 node，或者是另一个程序），换个端口，别去蹭别人的服务
+                int alt = FindFreePort(_port);
+                if (alt != _port) _port = alt;
             }
         }
 

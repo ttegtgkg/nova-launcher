@@ -552,13 +552,14 @@ function renderHome() {
     const memMb = inst.memory || S.config.memory?.customMb || S.optimize?.recommendedMb || 0;
     card.innerHTML = `
       <div class="inst-top">
-        <div class="inst-icon">${esc((inst.name || '?').trim().charAt(0).toUpperCase())}</div>
+        <div class="inst-icon loader-${esc(inst.loader || 'vanilla')}">${loaderIcon(inst.loader)}</div>
         <div class="inst-info">
           <div class="inst-name" title="${esc(inst.name)}">${esc(inst.name)}</div>
           <div class="inst-tags">
             <span class="inst-tag">MC ${esc(inst.version || '?')}</span>
             <span class="inst-tag loader">${esc(loaderName(inst.loader))}${inst.loaderVersion ? ' ' + esc(String(inst.loaderVersion).slice(0, 9)) : ''}</span>
             ${memMb ? `<span class="inst-tag">${memMb} MB</span>` : ''}
+            ${inst.extraRoot ? `<span class="inst-tag dir" title="${esc(inst.root || '')}">${esc(shortDir(inst.root))}</span>` : ''}
           </div>
         </div>
       </div>
