@@ -312,6 +312,7 @@ async function persistHistory(t) {
       createdAt: t.createdAt, finishedAt: t.finishedAt || Date.now(),
       bytes: t.bytesDone || 0, files: t.fileCount || t.total || 0,
       stage: t.stage,
+      warning: t.warning || null,
       error: t.error ? String(t.error).split('\n')[0].slice(0, 400) : null,
       retrySpec: t.retrySpec || null,
       logs: t.logs.slice(-40),
@@ -327,10 +328,17 @@ export async function clearHistory() {
   await writeJson(HISTORY_FILE, []);
 }
 
-export function tdone(t, result = null) {
+/**
+ * 标记任务完成。
+ * opts.stage / opts.warning 用来表达「跑完了，但不完全是好消息」——
+ * 比如补前置时有几个根本补不上。以前这里一律写「已完成」，前端又只看 status
+ * 就显示成「成功」，而日志里明明还写着缺东西，看起来像自相矛盾。
+ */
+export function tdone(t, result = null, opts = {}) {
   if (!t) return;
   t.status = 'done'; t.percent = 100; t.result = result; t.finishedAt = Date.now();
-  t.stage = '已完成';
+  t.stage = (opts && opts.stage) || '已完成';
+  t.warning = (opts && opts.warning) || null;
   t.speedBps = 0;
   persistHistory(t);
 }

@@ -2542,8 +2542,13 @@ function renderDownloads() {
   $('#dlHistoryCount').textContent = hist.length ? `${shown.length} / ${hist.length} 条` : '';
   const histBox = $('#dlHistory');
   histBox.innerHTML = shown.length ? shown.map(h => {
-    const statusLabel = h.status === 'done' ? '成功' : h.status === 'cancelled' ? '已取消' : '失败';
-    const color = h.status === 'done' ? 'var(--ok)' : h.status === 'cancelled' ? 'var(--text-mute)' : 'var(--danger)';
+    // 「跑完了但没全成」不能显示成成功 —— 否则跟模组页的缺失警告条互相打脸
+    const warned = h.status === 'done' && h.warning;
+    const statusLabel = h.status === 'done' ? (warned ? '部分完成' : '成功')
+      : h.status === 'cancelled' ? '已取消' : '失败';
+    const color = warned ? 'var(--warn)'
+      : h.status === 'done' ? 'var(--ok)'
+        : h.status === 'cancelled' ? 'var(--text-mute)' : 'var(--danger)';
     const dur = h.finishedAt && h.createdAt ? Math.round((h.finishedAt - h.createdAt) / 1000) : 0;
     return `<div class="dl-task ${h.status}">
       <div class="dlt-head">
@@ -2561,6 +2566,7 @@ function renderDownloads() {
         ${dur ? `<span>耗时 ${fmtEta(dur)}</span>` : ''}
         <span>${fmtTime(h.finishedAt)}</span>
       </div>
+      ${h.warning ? `<div class="dlt-warn">${esc(h.warning)}</div>` : ''}
       ${h.error ? `<div class="dlt-err">${esc(h.error)}</div>` : ''}
     </div>`;
   }).join('') : `<div class="empty" style="padding:30px">
@@ -2811,10 +2817,11 @@ function renderTaskbar() {
   bar.classList.remove('hidden');
   const body = $('#taskbarBody');
   body.innerHTML = list.slice(0, 6).map(t => {
-    const label = t.status === 'error' ? '失败' : t.status === 'done' ? '完成'
-      : t.status === 'cancelled' ? '已取消' : (t.percent || 0) + '%';
+    const label = t.status === 'error' ? '失败'
+      : t.status === 'done' ? (t.warning ? '部分完成' : '完成')
+        : t.status === 'cancelled' ? '已取消' : (t.percent || 0) + '%';
     return `
-    <div class="task-item ${t.status}">
+    <div class="task-item ${t.status}${t.warning ? ' warn' : ''}">
       <div class="ti-head">
         <span class="ti-title">${esc(t.title)}</span>
         <span class="ti-pct">${label}</span>

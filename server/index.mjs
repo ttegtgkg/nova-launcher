@@ -2217,8 +2217,24 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
         const r = await autoInstallMissingDeps(instId, {
           task, mcVersion: inst.version, loader: inst.loader,
         });
-        if (r.failed.length) tlog(task, `以下前置需要手动处理：${r.failed.map(f => `${f.modId}（${f.reason}）`).join('；')}`);
-        tdone(task, r);
+        const nFixed = r.fixed.length, nFailed = r.failed.length, nLeft = (r.remaining || []).length;
+        if (nFailed) {
+          tlog(task, `以下前置需要手动处理：${r.failed.map(f => `${f.modId}（${f.reason}）`).join('；')}`);
+          if (r.failed.some(f => f.unsupported)) {
+            tlog(task, '补不上的前置多半是根本没有适配当前版本的发行版，卸掉需要它的模组才是正解');
+          }
+        }
+        // 别一律报「成功」：没补齐就得说清楚，否则任务列表和上面的警告条在互相打脸
+        let stage = '已完成', warning = null;
+        if (nFailed) {
+          stage = nFixed ? `补齐 ${nFixed} 个，${nFailed} 个补不上` : `${nFailed} 个前置补不上`;
+          warning = `${nFailed} 个前置无法自动补齐`;
+          if (nLeft) warning += `，仍有 ${nLeft} 个缺失`;
+        } else if (!nFixed && (r.remaining || []).length) {
+          stage = '没有可自动补齐的前置';
+          warning = '仍有前置缺失';
+        }
+        tdone(task, r, { stage, warning });
       } catch (e) { tfail(task, e); }
     })();
     return ok(res, { task: taskPublic(task) });
