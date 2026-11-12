@@ -1888,24 +1888,43 @@ async function checkDepsQuiet(instanceId) {
  * 唯一的出路是把需要它的模组卸了，不该让用户自己回列表里找。
  */
 function depsBannerHtml(deps) {
-  if (!deps || !deps.missing || !deps.missing.length) return '';
-  const list = deps.missing.map(m => {
+  const missing = deps?.missing || [];
+  const wrong = deps?.wrongLoader || [];
+  if (!missing.length && !wrong.length) return '';
+
+  const list = missing.map(m => {
     const by = (m.neededBy || []).map(f =>
       `<button class="dw-del" data-del-dep="${esc(f)}" title="卸载 ${esc(f)}">${
         esc(f.replace(/\.jar(\.disabled)?$/i, '').slice(0, 36))}</button>`).join('、');
     return `<li><b>${esc(m.modId)}</b>${m.range ? ` <span class="muted">${esc(m.range)}</span>` : ''}
       <span class="muted">← 被</span> ${by} <span class="muted">需要</span></li>`;
   }).join('');
-  return `<div class="deps-warn">
-    <div class="dw-head">⚠ 缺少 ${deps.missing.length} 个必需前置模组，游戏可能无法启动</div>
-    <ul class="dw-list">${list}</ul>
-    <div class="row-gap">
-      <button class="btn btn-primary btn-sm" data-fix-deps="1">一键补齐</button>
-      <span class="muted" style="font-size:11.5px">
-        从 Modrinth 自动找适配当前版本的前置；点上面的模组名可以直接卸载它。
-        前置本身不支持这个游戏版本时，卸掉需要它的模组才是正解。</span>
-    </div>
-  </div>`;
+
+  // 只认对面加载器的元数据 —— 这种模组装了也不会被游戏读，得单独说清楚，
+  // 否则用户只会觉得「我装了模组怎么没生效」
+  const wrongHtml = wrong.length
+    ? `<div class="dw-head" style="margin-top:${missing.length ? '10px' : '0'}">
+         ⚠ ${wrong.length} 个模组不适用于当前加载器${deps.loader ? `（${esc(loaderName(deps.loader))}）` : ''}，游戏不会加载它们
+       </div>
+       <ul class="dw-list">${wrong.slice(0, 6).map(f =>
+      `<li><span class="muted">${esc(f)}</span></li>`).join('')}
+         ${wrong.length > 6 ? `<li class="muted">…另外 ${wrong.length - 6} 个</li>` : ''}</ul>
+       <span class="muted" style="font-size:11.5px">
+         这些 jar 里只有别的加载器的声明。要用它们就得换成对应的加载器，或者换一版支持 ${esc(loaderName(deps.loader || ''))} 的下载。</span>`
+    : '';
+
+  const missingHtml = missing.length
+    ? `<div class="dw-head">⚠ 缺少 ${missing.length} 个必需前置模组，游戏可能无法启动</div>
+       <ul class="dw-list">${list}</ul>
+       <div class="row-gap">
+         <button class="btn btn-primary btn-sm" data-fix-deps="1">一键补齐</button>
+         <span class="muted" style="font-size:11.5px">
+           从 Modrinth 自动找适配当前版本的前置；点上面的模组名可以直接卸载它。
+           前置本身不支持这个游戏版本时，卸掉需要它的模组才是正解。</span>
+       </div>`
+    : '';
+
+  return `<div class="deps-warn">${missingHtml}${wrongHtml}</div>`;
 }
 
 async function renderTabContent(inst, body, kind) {

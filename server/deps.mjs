@@ -19,7 +19,7 @@
 
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import { P, zipEntries, zipRead } from './core.mjs';
+import { P, readJson, zipEntries, zipRead } from './core.mjs';
 
 /** 游戏 / 加载器自带，永远不可能是「缺失的模组」 */
 const BUILTIN = new Set([
@@ -30,7 +30,11 @@ const BUILTIN = new Set([
 const MAX_EMBED_DEPTH = 3;      // jar 套 jar 最多挖 3 层
 const MAX_JAR_BYTES = 96 * 1024 * 1024;
 
-/** 解析结果缓存：path -> { key, data } */
+/**
+ * 解析结果缓存：path -> { key, data }。
+ * 缓存的是「两套元数据都留着」的原始结果，和加载器无关 ——
+ * 同一个 jar 在不同加载器的实例里要取不同的那份，过滤放到 checkInstanceDeps 里做。
+ */
 const jarCache = new Map();
 
 /* ------------------------------------------------------------------ 单个 jar */
@@ -93,36 +97,46 @@ function parseToml(text) {
 /**
  * 解析一个 jar（含内嵌的 jar）提供了哪些 modId、需要哪些前置。
  * 结果按 size+mtime 缓存，反复检查不会重复解压。
+ *
+ * Fabric 段和 Forge/NeoForge 段的依赖**分开返回**，不要在这里合并：
+ * 好多模组（比如 Collective、Infinite Trading）把三套元数据塞进同一个 jar，
+ * 在 NeoForge 实例里读 fabric.mod.json 的 depends 会凭空读出个 fabric-api，
+ * 报「缺少必需前置」，而那段代码在 NeoForge 下压根不会被加载。
  */
 async function parseJar(file, depth = 0) {
   let st;
-  try { st = await fsp.stat(file); } catch { return { ids: new Set(), deps: [] }; }
-  if (st.size > MAX_JAR_BYTES) return { ids: new Set(), deps: [] };
+  try { st = await fsp.stat(file); } catch { return emptyJar(); }
+  if (st.size > MAX_JAR_BYTES) return emptyJar();
 
   const key = `${st.size}:${st.mtimeMs}`;
   const hit = jarCache.get(file);
   if (hit && hit.key === key) return hit.data;
 
   const ids = new Set();
-  const deps = [];
+  const fabricDeps = [];
+  const tomlDeps = [];
+  let hasFabric = false;
+  let hasToml = false;
   try {
     const buf = await fsp.readFile(file);
     const entries = zipEntries(buf);
     const find = (n) => entries.find(e => e.name === n);
 
-    // ---- 本体的声明 ----
+    // ---- Fabric / Quilt 段 ----
     for (const name of ['fabric.mod.json', 'quilt.mod.json']) {
       const e = find(name);
       if (!e) continue;
       const r = parseFabricJson(zipRead(buf, e).toString('utf8'));
-      if (r) { for (const id of r.ids) ids.add(id); deps.push(...r.deps); }
+      if (r) { for (const id of r.ids) ids.add(id); fabricDeps.push(...r.deps); hasFabric = true; }
       break;
     }
+    // ---- Forge / NeoForge 段 ----
     const tomlEntry = find('META-INF/neoforge.mods.toml') || find('META-INF/mods.toml');
     if (tomlEntry) {
       const r = parseToml(zipRead(buf, tomlEntry).toString('utf8'));
       for (const id of r.ids) ids.add(id);
-      deps.push(...r.deps);
+      tomlDeps.push(...r.deps);
+      hasToml = true;
     }
 
     // ---- 内嵌 jar（jar-in-jar）：它们提供的东西也算已存在 ----
@@ -155,23 +169,28 @@ async function parseJar(file, depth = 0) {
             const ie = inner.find(x => x.name === nm);
             if (!ie) continue;
             const r = parseFabricJson(zipRead(innerBuf, ie).toString('utf8'));
-            if (r) { for (const id of r.ids) ids.add(id); deps.push(...r.deps); }
+            if (r) { for (const id of r.ids) ids.add(id); fabricDeps.push(...r.deps); hasFabric = true; }
             break;
           }
           const it = inner.find(x => x.name === 'META-INF/neoforge.mods.toml' || x.name === 'META-INF/mods.toml');
           if (it) {
             const r = parseToml(zipRead(innerBuf, it).toString('utf8'));
             for (const id of r.ids) ids.add(id);
-            deps.push(...r.deps);
+            tomlDeps.push(...r.deps);
+            hasToml = true;
           }
         } catch { /* 内嵌 jar 坏了就算了 */ }
       }
     }
   } catch { /* 不是 zip / 读不了，当空 */ }
 
-  const data = { ids, deps };
+  const data = { ids, fabricDeps, tomlDeps, hasFabric, hasToml };
   jarCache.set(file, { key, data });
   return data;
+}
+
+function emptyJar() {
+  return { ids: new Set(), fabricDeps: [], tomlDeps: [], hasFabric: false, hasToml: false };
 }
 
 /* ------------------------------------------------------------ 整个实例 */
@@ -180,26 +199,49 @@ const KIND_DIR = { mod: 'mods', resourcepack: 'resourcepacks', shader: 'shaderpa
 
 /**
  * 扫描实例的 mods 目录，对账出缺失的必需前置。
- * 返回 { scanned, provided: [modId], missing: [{ modId, range, neededBy: [文件名] }], issues }
+ * 返回 { scanned, loader, provided: [modId], missing: [{ modId, range, neededBy: [文件名] }],
+ *        wrongLoader: [文件名], issues }
+ *
+ * 按实例的加载器只看对应那套元数据。多加载器模组把一个 jar 里塞三份声明，
+ * 不区分的话 NeoForge 实例会凭空要求 fabric-api 这种根本装不上的前置。
  */
-export async function checkInstanceDeps(instanceId, { kind = 'mod' } = {}) {
+export async function checkInstanceDeps(instanceId, { kind = 'mod', loader: loaderArg = null } = {}) {
   const dir = path.join(P.instance(instanceId), KIND_DIR[kind] || 'mods');
   let files = [];
   try {
     files = (await fsp.readdir(dir)).filter(f => /\.jar$/i.test(f) && !/\.disabled$/i.test(f));
   } catch {
-    return { scanned: 0, provided: [], missing: [], dir, issues: [] };
+    return { scanned: 0, loader: loaderArg, provided: [], missing: [], wrongLoader: [], dir, issues: [] };
   }
+
+  let loader = loaderArg;
+  if (!loader) {
+    const meta = await readJson(path.join(P.instance(instanceId), 'instance.json'), null);
+    loader = meta?.loader || null;
+  }
+  const usesFabric = loader === 'fabric' || loader === 'quilt';
+  const usesToml = loader === 'forge' || loader === 'neoforge';
 
   const provided = new Map();   // modId -> 文件名
   const allNeeds = [];
   const issues = [];
+  const wrongLoader = [];
 
   for (const f of files) {
     const r = await parseJar(path.join(dir, f));
+    // 提供的 id 合并算：多加载器 jar 里 id 一般三份一样，合并不会误伤
     for (const id of r.ids) if (!provided.has(id)) provided.set(id, f);
-    for (const d of r.deps) allNeeds.push({ ...d, jar: f });
+
+    let deps;
+    if (usesFabric) deps = r.fabricDeps;
+    else if (usesToml) deps = r.tomlDeps;
+    else deps = [...r.fabricDeps, ...r.tomlDeps];   // 加载器不明：保守，两套都算
+    for (const d of deps) allNeeds.push({ ...d, jar: f });
+
     if (!r.ids.size) issues.push(f);       // 没解析出 modId 的（可能是纯库 / 特殊结构）
+    // 只有对面加载器的元数据 —— 这个 mod 在当前实例里根本不会被加载
+    if (usesFabric && r.hasToml && !r.hasFabric) wrongLoader.push(f);
+    else if (usesToml && r.hasFabric && !r.hasToml) wrongLoader.push(f);
   }
 
   const missingMap = new Map();
@@ -216,8 +258,10 @@ export async function checkInstanceDeps(instanceId, { kind = 'mod' } = {}) {
   return {
     scanned: files.length,
     dir,
+    loader,
     provided: [...provided.keys()].sort(),
     missing: [...missingMap.values()],
+    wrongLoader,
     issues: issues.slice(0, 20),
   };
 }
