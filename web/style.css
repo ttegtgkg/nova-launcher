@@ -667,7 +667,11 @@ input[type=range]::-webkit-slider-thumb:active { cursor: grabbing; transform: sc
   color: var(--text-dim); cursor: pointer; transition: all .15s;
 }
 .inst-more:hover { background: var(--card-hi); color: var(--text); filter: brightness(1.2); }
-.inst-more svg { width: 14px; height: 14px; fill: currentColor; }
+/* 齿轮是描边画的，不能用 fill */
+.inst-more svg {
+  width: 15px; height: 15px; fill: none; stroke: currentColor;
+  stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
+}
 
 /* ---------------------------------------------- 版本列表 */
 .version-list { display: flex; flex-direction: column; gap: 7px; max-height: 460px; overflow-y: auto; padding-right: 4px; }

@@ -568,8 +568,8 @@ function renderHome() {
         <div class="inst-actions">
           <button class="inst-play" data-play="${inst.id}">
             <svg viewBox="0 0 24 24"><path d="M7 4l13 8-13 8z"/></svg>启动</button>
-          <button class="inst-more" data-more="${inst.id}" title="更多">
-            <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
+          <button class="inst-more" data-more="${inst.id}" title="实例设置">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.1"/><path d="M12 2.5v2.4M12 19.1v2.4M2.5 12h2.4M19.1 12h2.4M18.4 5.6l-1.7 1.7M7.3 16.7l-1.7 1.7M18.4 18.4l-1.7-1.7M7.3 7.3L5.6 5.6"/></svg>
           </button>
         </div>
       </div>`;
@@ -579,12 +579,17 @@ function renderHome() {
       localStorage.setItem('nova.selected', inst.id);
       renderHome(); renderOptimize(); renderHero();
     };
+    // 和实例页一致：右键直接进设置
+    card.oncontextmenu = (e) => {
+      e.preventDefault();
+      gotoInstanceSettings(inst.id);
+    };
     grid.appendChild(card);
   }
 
   // 事件委托（限定在当前网格内，避免误绑定其他页面的按钮）
   $$('[data-play]', grid).forEach(b => b.onclick = (e) => { e.stopPropagation(); launch(b.dataset.play); });
-  $$('[data-more]', grid).forEach(b => b.onclick = (e) => { e.stopPropagation(); instanceMenu(b.dataset.more); });
+  $$('[data-more]', grid).forEach(b => b.onclick = (e) => { e.stopPropagation(); gotoInstanceSettings(b.dataset.more); });
 
   renderHero();
 }
@@ -649,77 +654,22 @@ async function renderOptimize() {
 
 /* ------------------------------------------------------------ 实例操作 */
 
-function instanceMenu(id) {
+/**
+ * 进入实例详情页的「设置」标签。
+ * 以前这里弹一个「实例选项」模态框，和详情页的「设置」页功能几乎重复，
+ * 两套入口维护起来容易不一致（模态框少了改加载器，设置页少了复制实例）。
+ * 现在统一走设置页，模态框已经去掉。
+ */
+function gotoInstanceSettings(id) {
   const inst = S.instances.find(i => i.id === id);
   if (!inst) return;
-  const memOptions = [1024, 1536, 2048, 3072, 4096, 6144, 8192];
-  openModal(`
-    <h2>${esc(inst.name)}</h2>
-    <p class="modal-sub">Minecraft ${esc(inst.version)} · ${esc(loaderName(inst.loader))} ${esc(inst.loaderVersion || '')} · 版本 ID: ${esc(inst.versionId || '')}</p>
-    <div class="form-grid">
-      <div class="field"><label>实例名称</label><input type="text" id="miName" value="${esc(inst.name)}"></div>
-      <div class="field"><label>分配内存（MB）</label>
-        <input type="number" id="miMem" min="512" step="256" value="${inst.memory || S.optimize?.recommendedMb || 3072}"></div>
-      <div class="field"><label>JVM 优化预设</label>
-        <select id="miPreset">
-          ${Object.entries(JVM_PRESETS).map(([k, v]) => `<option value="${k}" ${k === (inst.jvmPreset || 'aikar') ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}
-        </select>
-      </div>
-      <div class="field"><label>Java</label>
-        <select id="miJava"><option value="auto">自动选择</option>
-          ${(S.status?.javas || []).map(j => `<option value="${esc(j.path)}" ${j.path === inst.javaPath ? 'selected' : ''}>Java ${j.major} · ${esc(j.vendor || '')}</option>`).join('')}
-        </select>
-      </div>
-      <div class="field"><label>窗口宽度</label><input type="number" id="miW" value="${inst.width || 854}"></div>
-      <div class="field"><label>窗口高度</label><input type="number" id="miH" value="${inst.height || 480}"></div>
-    </div>
-    <div class="field" style="margin-top:14px"><label>额外 JVM 参数</label>
-      <input type="text" id="miExtra" value="${esc(inst.extraJvmArgs || '')}" placeholder="-XX:+UseZGC"></div>
-    <label class="switch-line" style="margin-top:16px">
-      <input type="checkbox" id="miAutoOpt" ${inst.autoOptimize !== false ? 'checked' : ''}>
-      <span>启动时自动优化内存（按当时的可用内存与模组数动态计算）</span>
-    </label>
-    <div class="row-gap" style="margin-top:18px">
-      <button class="btn btn-soft btn-sm" id="miFolder">打开目录</button>
-      <button class="btn btn-soft btn-sm" id="miCopy">复制实例</button>
-      <button class="btn btn-danger btn-sm" id="miDel">删除实例</button>
-    </div>`,
-    {
-      okText: '保存', onOk: async (box) => {
-        await apiPost('/api/instances/update', {
-          id: inst.id,
-          name: $('#miName', box).value.trim() || inst.name,
-          memory: Number($('#miMem', box).value) || null,
-          jvmPreset: $('#miPreset', box).value,
-          autoOptimize: $('#miAutoOpt', box).checked,
-          javaPath: $('#miJava', box).value,
-          width: Number($('#miW', box).value) || 854,
-          height: Number($('#miH', box).value) || 480,
-          extraJvmArgs: $('#miExtra', box).value,
-        });
-        toast('已保存', '实例配置已更新', 'ok');
-        await refreshAll();
-      },
-    });
-
-  $('#miFolder').onclick = () => apiPost('/api/instances/open', { id: inst.id }).then(() => closeModal());
-  $('#miCopy').onclick = async () => {
-    try {
-      const r = await apiPost('/api/instances/duplicate', { id: inst.id });
-      toast('已复制', r.instance.name, 'ok'); closeModal(); await refreshAll();
-    } catch (e) { toast('复制失败', e.message, 'error'); }
-  };
-  $('#miDel').onclick = async () => {
-    closeModal();
-    const box = openModal(`<h2>删除实例？</h2>
-      <p class="modal-sub">「${esc(inst.name)}」的全部模组、存档与配置都会被删除，此操作不可撤销。</p>`,
-      { okText: '确认删除', onOk: async () => {
-        await apiPost('/api/instances/delete', { id: inst.id });
-        toast('已删除', inst.name, 'ok');
-        if (S.selected === inst.id) { S.selected = null; localStorage.removeItem('nova.selected'); }
-        await refreshAll();
-      } });
-  };
+  INST.detailId = id;
+  INST.tab = 'settings';
+  S.selected = id;
+  localStorage.setItem('nova.selected', id);
+  // 首页那张卡片也会走到这里，光 renderInstancesPage() 不会切页 —— 得先把页面换过去
+  if (S.page !== 'instances') switchPage('instances');
+  renderInstancesPage();
 }
 
 async function newInstanceWizard() {
@@ -1768,8 +1718,8 @@ function instanceCardHtml(inst) {
       <div class="inst-meta">${inst.lastPlayed ? '上次 ' + fmtTime(inst.lastPlayed) : '还没玩过'}${inst.playtimeSec ? ' · ' + fmtDur(inst.playtimeSec) : ''}</div>
       <div class="inst-actions">
         <button class="inst-play" data-play="${esc(inst.id)}"><svg viewBox="0 0 24 24"><path d="M7 4l13 8-13 8z"/></svg>启动</button>
-        <button class="inst-more" data-more="${esc(inst.id)}" title="设置（右键可直接打开）">
-          <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
+        <button class="inst-more" data-more="${esc(inst.id)}" title="实例设置（右键卡片也能打开）">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.1"/><path d="M12 2.5v2.4M12 19.1v2.4M2.5 12h2.4M19.1 12h2.4M18.4 5.6l-1.7 1.7M7.3 16.7l-1.7 1.7M18.4 18.4l-1.7-1.7M7.3 7.3L5.6 5.6"/></svg>
         </button>
       </div>
     </div>
@@ -1804,11 +1754,11 @@ function renderInstanceListFull() {
     renderInstancesPage();
   });
   $$('[data-play]', grid).forEach(b => b.onclick = (e) => { e.stopPropagation(); launch(b.dataset.play); });
-  $$('[data-more]', grid).forEach(b => b.onclick = (e) => { e.stopPropagation(); instanceMenu(b.dataset.more); });
+  $$('[data-more]', grid).forEach(b => b.onclick = (e) => { e.stopPropagation(); gotoInstanceSettings(b.dataset.more); });
   // 右键直接开设置，和 PCL 一样不用先点「更多」
   $$('[data-ctx]', grid).forEach(c => c.oncontextmenu = (e) => {
     e.preventDefault();
-    instanceMenu(c.dataset.ctx);
+    gotoInstanceSettings(c.dataset.ctx);
   });
 }
 
@@ -1833,13 +1783,18 @@ async function renderInstanceDetail() {
       <button class="btn btn-primary" data-play="${esc(inst.id)}">
         <svg viewBox="0 0 24 24" class="btn-ico" style="fill:currentColor;stroke:none"><path d="M7 4l13 8-13 8z"/></svg>启动</button>
       <button class="btn btn-soft btn-sm" data-open-folder="${esc(inst.id)}" data-folder="root">打开目录</button>
-      <button class="btn btn-soft btn-sm" data-more="${esc(inst.id)}">实例选项</button>
+      <button class="btn btn-soft btn-sm" data-settings="${esc(inst.id)}">实例设置</button>
     </div>`;
 
   $$('[data-play]', $('#instHero')).forEach(b => b.onclick = () => launch(b.dataset.play));
   $$('[data-open-folder]', $('#instHero')).forEach(b => b.onclick = () =>
     apiPost('/api/instance/open-folder', { id: b.dataset.openFolder, kind: b.dataset.folder }).catch(() => { }));
-  $$('[data-more]', $('#instHero')).forEach(b => b.onclick = () => instanceMenu(b.dataset.more));
+  // 「实例设置」就是切到下面那个设置标签，不再弹独立窗口
+  $$('[data-settings]', $('#instHero')).forEach(b => b.onclick = () => {
+    INST.tab = 'settings';
+    renderInstTabs(inst);
+    renderInstTab();
+  });
 
   renderInstTabs(inst);
   await renderInstTab();
@@ -2362,6 +2317,7 @@ async function renderTabSettings(inst, body) {
           <input type="text" value="${esc(inst.version)} · ${esc(loaderName(inst.loader))} ${esc(inst.loaderVersion || '')}" disabled></div>
         <div class="row-gap" style="margin-top:14px">
           <button class="btn btn-soft btn-sm" data-open-folder="${esc(inst.id)}" data-folder="root">打开实例目录</button>
+          <button class="btn btn-soft btn-sm" id="isCopy">复制实例</button>
         </div>
       </div>
 
@@ -2414,6 +2370,18 @@ async function renderTabSettings(inst, body) {
   $$('[data-open-folder]', body).forEach(b => b.onclick = () =>
     apiPost('/api/instance/open-folder', { id: b.dataset.openFolder, kind: b.dataset.folder }).catch(() => { }));
   if ($('#isChangeLoader', body)) $('#isChangeLoader', body).onclick = () => openChangeLoader(inst);
+  if ($('#isCopy', body)) $('#isCopy', body).onclick = async () => {
+    const btn = $('#isCopy', body);
+    btn.disabled = true; btn.textContent = '复制中…';
+    try {
+      const r = await apiPost('/api/instances/duplicate', { id: inst.id });
+      toast('已复制', r.instance?.name || '新实例', 'ok');
+      await refreshAll();
+    } catch (e) {
+      toast('复制失败', e.message, 'error');
+      btn.disabled = false; btn.textContent = '复制实例';
+    }
+  };
   const mem = $('#isMem', body);
   mem.oninput = () => { $('#isMemShow', body).textContent = Number(mem.value) + ' MB'; };
   $('#isSave', body).onclick = async () => {
