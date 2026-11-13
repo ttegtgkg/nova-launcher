@@ -273,6 +273,20 @@ const MAX_STEPS = 40;   // 子项最多留 40 条，够看又不会把任务对�
  * 整合包装到一半、游戏版本下到一半的时候，光看一根总进度条根本不知道
  * 到底在干什么，53% 是卡住了还是在跑，全靠猜。
  */
+/**
+ * 切换阶段。
+ *
+ * 顺带维护一份 steps，并且**把字节统计归零** —— 进度改成「每阶段独立」，
+ * 不再用一个全局百分比。
+ *
+ * 以前的算法是 bytesDone / bytesTotal 全程累加，问题是分母只会变大：
+ * 下完 63 MB 的整合包显示 100%，一进「安装游戏版本」，分母又被加上游戏本体，
+ * 进度立刻掉回 71%；再进「补全前置」还要掉一次。
+ * 根本原因是有些阶段的工作量事先无法预知（安装器自己决定要下什么、
+ * 补前置要查完才知道还缺谁），只要还拿单一百分比表示，就必然会往回跳。
+ *
+ * 现在：每阶段自己一笔账，切阶段就清零；前端显示「第 N 步 · 本步 x%」。
+ */
 export function tstage(t, stage, total = 0) {
   if (!t) return;
   if (!t.steps) t.steps = [];
@@ -282,6 +296,8 @@ export function tstage(t, stage, total = 0) {
   if (prev && prev.status === 'running' && prev.label !== stage) {
     prev.status = 'done';
     prev.doneAt = Date.now();
+    prev.bytesDone = t.bytesDone || 0;      // 把这一阶段的账封存下来
+    prev.bytesTotal = t.bytesTotal || 0;
   }
 
   t.stage = stage;
@@ -289,9 +305,14 @@ export function tstage(t, stage, total = 0) {
   t.detail = '';
   t.speedBps = 0;
   t._samples = [];
+  // 阶段独立：字节账清零，由各阶段自己决定这一轮要下多少
+  t.bytesDone = 0;
+  t.bytesTotal = 0;
 
   if (prev && prev.label === stage) {
     prev.status = 'running';          // 同名阶段再来一轮（比如多轮补前置）
+    prev.bytesDone = 0;
+    prev.bytesTotal = 0;
   } else {
     t.steps.push({ label: stage, status: 'running', startedAt: Date.now() });
     if (t.steps.length > MAX_STEPS) t.steps.shift();
@@ -326,22 +347,11 @@ export function tprogress(t, addDone = 0, detail = '') {
   if (detail) t.detail = detail;
 }
 
-/**
- * 下载前先把「这次要下多少字节」登进任务。
- *
- * 前端画进度条用的是 bytesDone / bytesTotal，而 downloadOne 的 onProgress
- * 只累加 bytesDone。总量不提前登记的话，分母会一直停在之前那个小文件上 ——
- * 下一个 25 MB 的 jar 或者 170 MB 的整合包，进度条能纹丝不动地卡十几分钟，
- * 像死了一样。
- */
-export function tplanBytes(t, size) {
-  if (t && Number(size) > 0) t.bytesTotal = (t.bytesTotal || 0) + Number(size);
-}
 
 /** 单个文件下载完成后记账（用于不经过 downloadBatch 的直接下载） */
 export function taddFile(t, size = 0) {
   if (!t) return;
-  if (size > 0) { t.bytesTotal += size; addBytes(t, size); }
+  if (size > 0) addBytes(t, size);
   t.fileDone = (t.fileDone || 0) + 1;
   t.fileCount = (t.fileCount || 0) + 1;
 }
@@ -889,7 +899,6 @@ export async function downloadBatch(items, { concurrency = 12, task = null, onOn
     // 不重置 stage，只对齐总数并累计字节规模
     if (task.total !== total) { task.total = total; task.done = 0; task.percent = 0; }
     task.fileCount = (task.fileCount || 0) + total;
-    task.bytesTotal = (task.bytesTotal || 0) + items.reduce((a, b) => a + (b.size || 0), 0);
   }
 
   async function worker() {

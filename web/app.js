@@ -2599,10 +2599,17 @@ function renderDownloads() {
   $('#btnCancelAll').style.display = running.length ? '' : 'none';
   const runBox = $('#dlRunning');
   runBox.innerHTML = running.length ? running.map(t => {
-    // 单文件下载时 percent 一直是 0，改用已下载字节算一个更直观的进度
-    const byFile = t.percent || 0;
-    const byByte = (t.bytesTotal > 0) ? Math.min(99, Math.round((t.bytesDone / t.bytesTotal) * 100)) : 0;
-    const pct = Math.max(byFile, byByte);
+    /*
+     * 进度改成「每阶段独立」之后，这里的百分比是**当前这一步**的，
+     * 不再是整个任务的。以前用全局 bytesDone/bytesTotal，分母会随新阶段变大，
+     * 进度条能从 100% 掉回 62%，看着像在倒退。
+     * 现在：切阶段时字节账清零，条子只在步内单调涨；跨步靠「第 N/M 步」表达。
+     */
+    const steps = t.steps || [];
+    const doneSteps = steps.filter(s => s.status === 'done').length;
+    const curIdx = Math.min(doneSteps + 1, steps.length || 1);
+    const byByte = (t.bytesTotal > 0) ? Math.min(100, Math.round((t.bytesDone / t.bytesTotal) * 100)) : 0;
+    const pct = t.bytesTotal > 0 ? byByte : (t.percent || 0);
     const left = (t.bytesTotal || 0) - (t.bytesDone || 0);
     const eta = t.speedBps && left > 0 ? left / t.speedBps : 0;
     return `<div class="dl-task running">
@@ -2613,12 +2620,14 @@ function renderDownloads() {
       </div>
       <div class="dlt-bar"><div class="dlt-fill" style="width:${pct}%"></div></div>
       <div class="dlt-meta">
-        <span>进度 <b>${pct}%</b></span>
-        <span>${t.done || 0}/${t.total || 0} 文件</span>
-        <span>已下载 <b>${fmtSize(t.bytesDone || 0)}</b>${t.bytesTotal ? ' / ' + fmtSize(t.bytesTotal) : ''}</span>
+        ${steps.length > 1 ? `<span>第 <b>${curIdx}</b>/${steps.length} 步</span>` : ''}
+        ${t.bytesTotal > 0
+        ? `<span>本步 <b>${pct}%</b>${t.stage ? ` · ${esc(t.stage)}` : ''}</span>`
+        : `<span>${esc(t.stage || '')}${t.detail ? ' · ' + esc(t.detail) : ''}</span>`}
+        ${t.bytesTotal > 0 ? `<span><b>${fmtSize(t.bytesDone || 0)}</b> / ${fmtSize(t.bytesTotal)}</span>`
+        : (t.total > 0 ? `<span>${t.done || 0}/${t.total} 个</span>` : '')}
         ${t.speedBps ? `<span class="sp">${fmtSpeed(t.speedBps)}</span>` : ''}
         ${eta > 0 ? `<span>剩余 ~${fmtEta(eta)}</span>` : ''}
-        ${t.stage ? `<span>${esc(t.stage)}</span>` : ''}
       </div>
       ${stepsHtml(t)}
     </div>`;
@@ -2918,13 +2927,18 @@ function renderTaskbar() {
         ? `第 ${Math.min(doneN + 1, steps.length)}/${steps.length} 步`
         : `${doneN}/${steps.length} 步`}</div>`
       : '';
+    // 进度条走「本步」的百分比，和下载管理页保持一致
+    const stepPct = t.status === 'error' || t.status === 'done' ? 100
+      : (t.bytesTotal > 0
+        ? Math.min(100, Math.round((t.bytesDone / t.bytesTotal) * 100))
+        : (t.percent || 0));
     return `
     <div class="task-item ${t.status}${t.warning ? ' warn' : ''}">
       <div class="ti-head">
         <span class="ti-title">${esc(t.title)}</span>
         <span class="ti-pct">${label}</span>
       </div>
-      <div class="ti-bar"><div class="ti-fill" style="width:${t.status === 'error' || t.status === 'done' ? 100 : (t.percent || 0)}%"></div></div>
+      <div class="ti-bar"><div class="ti-fill" style="width:${stepPct}%"></div></div>
       <div class="ti-stage">${esc(t.status === 'error' ? (t.error || '').split('\n')[0].slice(0, 120) : (t.stage + (t.detail ? ' · ' + t.detail : '')))}</div>
       ${stepTip}
     </div>`;

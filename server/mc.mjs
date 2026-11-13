@@ -6,7 +6,7 @@ import os from 'node:os';
 import { spawn, spawnSync } from 'node:child_process';
 import {
   P, SHARED, RUNTIME, CACHE, exists, existsSync, readJson, writeJson, httpJson, httpText,
-  downloadOne, downloadBatch, tlog, tstage, tprogress, addBytes, taddFile, tplanBytes, offlineUuid, sha1File, zipExtractAll,
+  downloadOne, downloadBatch, tlog, tstage, tprogress, addBytes, taddFile, offlineUuid, sha1File, zipExtractAll,
   zipEntries, zipRead,
 } from './core.mjs';
 
@@ -172,6 +172,7 @@ export async function installJava(major, task) {
     try {
       tlog(task, `从 ${src.name} 下载 JDK ${major} ...`);
       tstage(task, `下载 JDK ${major}（${src.name}）`, 1);
+  if (task) task.bytesTotal = Number(src.size) || 0;
       let lastBytes = 0;
       await downloadOne(url, zipPath, {
         source: 'official', timeout: 600000, retries: 1, idleMs: 30000,
@@ -179,7 +180,6 @@ export async function installJava(major, task) {
           if (!task) return;
           if (got < lastBytes) lastBytes = 0;
           if (got > lastBytes) { addBytes(task, got - lastBytes); lastBytes = got; }
-          if (total) task.bytesTotal = Math.max(task.bytesTotal || 0, total);
         },
       });
       taddFile(task, 0);
@@ -480,23 +480,17 @@ export async function installVersion(versionId, { source = 'auto', concurrency =
 
   // 1) client jar
   tstage(task, '游戏本体 jar', 1);
+  // 本阶段自己预算：只有 jar 这一个文件，大小写在 version json 里
+  if (task) task.bytesTotal = Number(vj.downloads?.client?.size) || 0;
   const jarPath = path.join(vdir, `${versionId}.jar`);
   if (vj.downloads?.client?.url) {
     let lastBytes = 0;
-    // 先把总量登进去：前端按 bytesDone/bytesTotal 画进度条，
-    // 只在下载过程中累加 bytesDone 会把分母一直停在几万字节，
-    // 于是「下 25 MB 的 jar」看起来像卡在 0% 一动不动。
-    // 先把总量登进去，同时用 onProgress 的 total 兜底：
-    // 前端按 bytesDone/bytesTotal 画进度条，分母不更新的话，
-    // 下一个 25 MB 的 jar 能纹丝不动地卡在 0% 十几分钟。
-    tplanBytes(task, vj.downloads.client.size);
     await downloadOne(vj.downloads.client.url, jarPath, {
       source, sha1: vj.downloads.client.sha1, size: vj.downloads.client.size, timeout: 180000,
       onProgress: (got, total) => {
         if (!task) return;
         if (got < lastBytes) lastBytes = 0;
         if (got > lastBytes) { addBytes(task, got - lastBytes); lastBytes = got; }
-        if (total) task.bytesTotal = Math.max(task.bytesTotal || 0, total);
       },
     });
     taddFile(task, 0);
@@ -515,6 +509,7 @@ export async function installVersion(versionId, { source = 'auto', concurrency =
   // 3) libraries + natives
   const plan = planLibraries(vj);
   tstage(task, `依赖库 (${plan.downloads.length})`, plan.downloads.length);
+  if (task) task.bytesTotal = plan.downloads.reduce((a, x) => a + (x.size || 0), 0);
   tlog(task, `需要下载 ${plan.downloads.length} 个依赖库`);
   const libRes = await downloadBatch(plan.downloads, { concurrency, task });
   if (libRes.cancelled) throw new Error('任务已取消');
@@ -548,6 +543,7 @@ export async function installVersion(versionId, { source = 'auto', concurrency =
   const assets = await planAssets(vj, source, task);
   if (assets.downloads.length) {
     tstage(task, `资源文件 (${assets.downloads.length})`, assets.downloads.length);
+  if (task) task.bytesTotal = assets.downloads.reduce((a, x) => a + (x.size || 0), 0);
     tlog(task, `开始下载 ${assets.downloads.length} 个资源文件（较慢，请耐心等待）`);
     const assetConc = Math.max(assets.concurrency || 32, concurrency * 3);
     const res = await downloadBatch(assets.downloads, { concurrency: assetConc, task });
@@ -709,6 +705,7 @@ export async function installFabricLike(loader, mcVersion, loaderVersion, { sour
 
   const plan = planLibraries(profile);
   tstage(task, `加载器依赖库 (${plan.downloads.length})`, plan.downloads.length);
+  if (task) task.bytesTotal = plan.downloads.reduce((a, x) => a + (x.size || 0), 0);
   const res = await downloadBatch(plan.downloads, { concurrency: 8, task });
   if (res.failed.length) {
     throw new Error('加载器依赖下载失败: ' + res.failed.slice(0, 3).map(f => `${f.file}: ${f.err}`).join('; '));

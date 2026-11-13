@@ -542,7 +542,6 @@ export async function mrInstall(instanceId, kind, projectId, { versionId = null,
   const dest = path.join(dir, safeName(file.filename));
   const shown = cn ? `${cn}（${title}）` : (title || file.filename);
   tlog(task, `下载 ${shown} · ${file.filename} (${(file.size / 1048576).toFixed(1)} MB)`);
-  if (task) task.bytesTotal = (task.bytesTotal || 0) + (file.size || 0);
   let lastBytes = 0;
   const dl = await downloadOne(file.url, dest, {
     source: 'official', sha1: file.sha1, size: file.size, timeout: 180000, idleMs: 25000,
@@ -554,7 +553,6 @@ export async function mrInstall(instanceId, kind, projectId, { versionId = null,
   });
   if (dl?.skipped) {
     tlog(task, '已存在且校验通过，跳过下载');
-    if (task) task.bytesTotal = Math.max(0, (task.bytesTotal || 0) - (file.size || 0));
   } else if (task) {
     task.fileDone = (task.fileDone || 0) + 1;
     task.fileCount = (task.fileCount || 0) + 1;
@@ -653,6 +651,8 @@ export async function autoInstallMissingDeps(instanceId, { task, mcVersion, load
     report.checked = r.scanned;
     const todo = r.missing.filter(m => !tried.has(m.modId));
     if (!todo.length) { report.remaining = r.missing; break; }
+    // 到这里终于知道这一轮要补几个，把总数交给任务，进度条才有意义
+    if (task) { task.total = todo.length; task.done = 0; }
 
     for (const m of todo) {
       tried.add(m.modId);

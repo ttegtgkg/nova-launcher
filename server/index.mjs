@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import {
   ROOT, DATA, SHARED, INSTANCES, RUNTIME, CACHE, P, ensureDirs, loadConfig, saveConfig,
   createTask, taskPublic, listTasks, getTask, tlog, tstage, tprogress, tdone, tfail, redactConfig,
-  cancelTask, getHistory, clearHistory, taddFile, addBytes, tplanBytes, MARKER_FILE, setExtraGameDirs, getExtraGameDirs, gameRoots,
+  cancelTask, getHistory, clearHistory, taddFile, addBytes, MARKER_FILE, setExtraGameDirs, getExtraGameDirs, gameRoots,
   httpText, readJson, writeJson, existsSync, exists, downloadOne, totalMemoryMb, freeMemoryMb,
   dirSize, safeName, offlineUuid, httpBinary, zipCreate, collectDirEntries, zipExtractAll, zipEntries, zipRead,
 } from './core.mjs';
@@ -1886,7 +1886,6 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
             if (!task) return;
             if (got < lastBytes) lastBytes = 0;
             if (got > lastBytes) { addBytes(task, got - lastBytes); lastBytes = got; }
-            if (total) task.bytesTotal = Math.max(task.bytesTotal || 0, total);
           },
         });
         taddFile(task, 0);
@@ -2123,7 +2122,6 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
             if (!task) return;
             if (got < last) last = 0;
             if (got > last) { addBytes(task, got - last); last = got; }
-            if (total) task.bytesTotal = Math.max(task.bytesTotal || 0, total);
           },
         });
         taddFile(task, 0);
@@ -2318,7 +2316,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
           // 否则「获取整合包信息」会卡在 0% 几十分钟，看不出是在下还是死了
           tlog(task, `下载 ${f.filename}${f.size ? `（${Math.round(f.size / 1048576)} MB）` : ''}`);
           tstage(task, '下载整合包', 1);
-          tplanBytes(task, f.size);
+          if (task) task.bytesTotal = Number(f.size) || 0;   // 这一阶段就这一个文件
           let lastMp = 0;
           await downloadOne(f.url, mrpackPath, {
             source: 'official', sha1: f.sha1, size: f.size, timeout: 900000, idleMs: 30000,
@@ -2326,7 +2324,6 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
               if (!task) return;
               if (got < lastMp) lastMp = 0;
               if (got > lastMp) { addBytes(task, got - lastMp); lastMp = got; }
-              if (total) task.bytesTotal = Math.max(task.bytesTotal || 0, total);
               tprogress(task, 0, `${Math.round(got / 1048576)} MB`);
             },
           });
@@ -2400,6 +2397,8 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
         await fsp.mkdir(tmpDir, { recursive: true });
         const zipPath = path.join(tmpDir, safeName(`cf-${body.modId}-${body.fileId}.zip`));
         tlog(task, `下载整合包 ${body.fileName || ''}`);
+        tstage(task, '下载整合包', 1);
+        if (task) task.bytesTotal = Number(body.fileSize) || 0;
         let last = 0;
         await downloadOne(url, zipPath, {
           source: 'official', timeout: 900000, idleMs: 30000, retries: 2,
@@ -2407,7 +2406,6 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
             if (!task) return;
             if (got < last) last = 0;
             if (got > last) { addBytes(task, got - last); last = got; }
-            if (total) task.bytesTotal = Math.max(task.bytesTotal || 0, total);
           },
         });
         taddFile(task, 0);
@@ -2442,28 +2440,12 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
               tprogress(task, 1, `${scanned}/${parsed.files.length}`);
             }
           }));
-          // 总量 = 已知的模组大小 + 整合包 zip 本身 + 游戏本体那堆东西
+          // 只把「模组总量」记下来，等真正进入「下载模组」阶段再交给任务。
+          // 现在进度是阶段独立的，不能在这里设全局分母 —— 一设就又回到
+          // 「边跑边涨、进度往回跳」的老路。
           const modBytes = parsed.files.reduce((a, x) => a + (x.size || 0), 0);
-          let gameBytes = 0;
-          try {
-            // 不把游戏本体（jar + 依赖库 + 资源文件）算进来，
-            // 装 MC 那一步会往分母里猛塞一千多 MB，进度条直接从 99% 掉到个位数
-            const vj0 = await getVersionJson(parsed.mcVersion, cfg.source);
-            gameBytes += Number(vj0.downloads?.client?.size) || 0;
-            const plan0 = planLibraries(vj0);
-            for (const d of plan0.downloads) gameBytes += Number(d.size) || 0;
-            const idxId = vj0.assetIndex?.id;
-            if (idxId) {
-              const aj = await readJson(path.join(P.assets, 'indexes', `${idxId}.json`), null);
-              if (aj) for (const o of Object.values(aj.objects || {})) gameBytes += Number(o.size) || 0;
-            }
-          } catch { /* 算不出来就按已知的来 */ }
-          if (task) {
-            task.bytesDone = 0;
-            task.bytesTotal = modBytes + (body.fileSize || 0) + gameBytes;
-          }
-          tlog(task, `预计下载 ${Math.round((modBytes + (body.fileSize || 0) + gameBytes) / 1048576)} MB`
-            + `（整合包 ${Math.round((body.fileSize || 0) / 1048576)} + 游戏本体 ${Math.round(gameBytes / 1048576)} + ${parsed.files.length} 个模组 ${Math.round(modBytes / 1048576)}）`);
+          tlog(task, `模组总量约 ${Math.round(modBytes / 1048576)} MB`);
+          parsed.__modBytes = modBytes;
         }
 
         // 整合包自带游戏本体：MC 版本和加载器都要先装好，不能当普通模组塞进某个实例
@@ -2499,6 +2481,8 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
 
         // manifest 只给 projectID/fileID，模组得一个个按号去要
         tstage(task, '下载模组', parsed.files.length);
+        // 这一阶段的总量在预扫时已经算好了
+        if (task) task.bytesTotal = parsed.__modBytes || 0;
         const rootDir = P.instance(inst.id);
         const modsDir = path.join(rootDir, 'mods');
         await fsp.mkdir(modsDir, { recursive: true });
@@ -2532,7 +2516,6 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
                   if (!task) return;
                   if (got < lastB) lastB = 0;
                   if (got > lastB) { addBytes(task, got - lastB); lastB = got; }
-                  if (total) task.bytesTotal = Math.max(task.bytesTotal || 0, total);
                 },
               });
               const actual = await sniffContentKind(tmpDest);
@@ -2566,7 +2549,9 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
         if (moved) tlog(task, `${moved} 个文件其实是资源包/光影，已放进对应目录`);
 
         // manifest 只列直接内容，前置得靠对账补：NeoForge 那边缺了会整片模组失效
-        tstage(task, '补全前置模组', 1);
+        // total 先给 0（不按文件数算），autoInstallMissingDeps 算出缺几个后自己会更新 ——
+        // 写成 1 的话补完第一个就显示 100%，然后还得跑半天
+        tstage(task, '补全前置模组', 0);
         let depReport = null;
         try {
           depReport = await autoInstallMissingDeps(inst.id, {

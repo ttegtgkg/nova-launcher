@@ -1,0 +1,39 @@
+feat: 进度改成每阶段独立，不再用全局百分比
+
+用户指出进度条能从 100% 掉回 62%，并要求**先把旧的删干净再改**
+（拿 Forbric 当反面教材：那个加载器里到现在还能找到它前身——一个翻译器——
+的残留文件）。
+
+先把旧逻辑删干净（24 处）：
+
+- core.mjs：删掉 tplanBytes() 整个函数；taddFile 不再往分母加；
+  downloadBatch 不再预算分母
+- content.mjs：删掉 mrInstall 里那两行动态加减分母
+- mc.mjs / index.mjs：删掉 6 处 onProgress 里的
+  `if (total) task.bytesTotal = Math.max(...)`，以及 tplanBytes 的导入和调用
+- 前端：删掉 byFile / Math.max(byFile, byByte) 那套
+
+确认清干净：现在 bytesTotal 全项目只剩三种写法 ——
+任务初始化、tstage 里清零、各阶段开始时的赋值（=，不是 +=）。
+tplanBytes / byFile 一个不剩。
+
+再建立新语义：
+
+- tstage() 切阶段时把 bytesDone/bytesTotal **清零**，上一个阶段的账封存到
+  steps[i].bytesDone / bytesTotal 里
+- 每个有下载的阶段**自己预算**：
+  整合包 zip（f.size）、游戏本体 jar、依赖库、资源文件、加载器依赖库、JDK
+- 「补全前置模组」不按文件数算（原来 total=1，补一个就 100% 然后还跑半天），
+  改成 autoInstallMissingDeps 算出缺几个后再设 total
+- 前端：进度条走「本步」的百分比，另标「第 N/M 步」；
+  没有字节预算的阶段不显示百分比，改显示阶段说明（如「安装器运行中 · 已输出 1200 行」）
+
+实测（From the Fog Reimagined，165 个模组）：
+
+  阶段内倒退次数: 0
+  [18:49:19] 第15/15步 解压整合包     本步  60%
+  [18:50:09] 第16/16步 下载模组       本步  25%   96.5/389.8 MB
+  [18:51:39] 第16/16步 下载模组       本步  95%  371.7/389.8 MB
+  [18:51:49] 第17/17步 补全前置模组   本步 …
+
+每段内部单调递增，跨段靠步号表达，不会再出现「100% 掉回 62%」。
