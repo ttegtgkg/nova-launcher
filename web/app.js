@@ -2510,6 +2510,28 @@ async function loadDownloads() {
   }
 }
 
+/**
+ * 任务的子项列表。
+ * 整合包安装、游戏版本下载这类任务要串十几个阶段，只有一根总进度条的话，
+ * 用户看到「62%」根本不知道在干什么 —— 是卡住了还是在跑，全靠猜。
+ */
+function stepsHtml(t, limit = 8) {
+  const steps = t.steps || [];
+  if (steps.length < 2) return '';       // 只有一步就没必要列了
+  const done = steps.filter(s => s.status === 'done').length;
+  const shown = steps.slice(-limit);
+  const skipped = steps.length - shown.length;
+  const rows = shown.map(s => {
+    const ico = s.status === 'done' ? '✓' : s.status === 'error' ? '✕' : '⟳';
+    const cls = s.status === 'done' ? 'is-done' : s.status === 'error' ? 'is-err' : 'is-run';
+    return `<li class="${cls}"><span class="ts-ico">${ico}</span><span class="ts-label">${esc(s.label)}</span></li>`;
+  }).join('');
+  return `<div class="task-steps">
+    <div class="ts-head">子项 <b>${done}</b>/${steps.length}${skipped ? ` <span class="muted">（前 ${skipped} 项已折叠）</span>` : ''}</div>
+    <ul class="ts-list">${rows}</ul>
+  </div>`;
+}
+
 function renderDownloads() {
   if (S.page !== 'downloads') return;
   const running = (S.tasks || []).filter(t => t.status === 'running');
@@ -2569,6 +2591,7 @@ function renderDownloads() {
         ${eta > 0 ? `<span>剩余 ~${fmtEta(eta)}</span>` : ''}
         ${t.stage ? `<span>${esc(t.stage)}</span>` : ''}
       </div>
+      ${stepsHtml(t)}
     </div>`;
   }).join('') : `<div class="empty" style="padding:30px">
       <div class="em-t">当前没有进行中的任务</div>
@@ -2858,6 +2881,14 @@ function renderTaskbar() {
     const label = t.status === 'error' ? '失败'
       : t.status === 'done' ? (t.warning ? '部分完成' : '完成')
         : t.status === 'cancelled' ? '已取消' : (t.percent || 0) + '%';
+    // 任务栏地方小，只报「第几步」；stage 上面已经单独一行了，别重复
+    const steps = t.steps || [];
+    const doneN = steps.filter(s => s.status === 'done').length;
+    const stepTip = steps.length > 1
+      ? `<div class="ti-steps">${t.status === 'running'
+        ? `第 ${Math.min(doneN + 1, steps.length)}/${steps.length} 步`
+        : `${doneN}/${steps.length} 步`}</div>`
+      : '';
     return `
     <div class="task-item ${t.status}${t.warning ? ' warn' : ''}">
       <div class="ti-head">
@@ -2866,6 +2897,7 @@ function renderTaskbar() {
       </div>
       <div class="ti-bar"><div class="ti-fill" style="width:${t.status === 'error' || t.status === 'done' ? 100 : (t.percent || 0)}%"></div></div>
       <div class="ti-stage">${esc(t.status === 'error' ? (t.error || '').split('\n')[0].slice(0, 120) : (t.stage + (t.detail ? ' · ' + t.detail : '')))}</div>
+      ${stepTip}
     </div>`;
   }).join('');
 }

@@ -1785,3 +1785,48 @@ html.no-token body > *:not(.no-token-overlay) { filter: blur(2px); pointer-event
   border: 1px solid var(--stroke);
 }
 .pack-note b { color: var(--text); }
+/* ---- 任务子项（整合包安装 / 游戏版本下载这类多阶段任务） ---- */
+.task-steps {
+  margin-top: 10px;
+  padding: 9px 12px;
+  border-radius: 9px;
+  background: var(--sunk);
+  border: 1px solid var(--stroke);
+}
+.ts-head {
+  font-size: 11px;
+  color: var(--text-faint);
+  margin-bottom: 6px;
+}
+.ts-head b { color: var(--text-dim); }
+.ts-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.ts-list li {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-faint);
+}
+.ts-ico {
+  flex: 0 0 auto;
+  width: 13px;
+  text-align: center;
+  font-size: 10px;
+}
+.ts-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ts-list li.is-done { color: var(--text-mute); }
+.ts-list li.is-done .ts-ico { color: var(--ok); }
+.ts-list li.is-run { color: var(--text); }
+.ts-list li.is-run .ts-ico { color: var(--accent); }
+.ts-list li.is-err { color: var(--danger); }
+.ts-list li.is-err .ts-ico { color: var(--danger); }
+/* 底部任务栏的步数提示 */
+.ti-steps {
+  margin-top: 4px;
+  font-size: 10.5px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

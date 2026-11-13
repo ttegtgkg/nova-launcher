@@ -263,14 +263,48 @@ export function tlog(t, msg) {
   t.logs.push(`[${new Date().toLocaleTimeString('zh-CN')}] ${msg}`);
   if (t.logs.length > 500) t.logs.splice(0, t.logs.length - 500);
 }
+const MAX_STEPS = 40;   // 子项最多留 40 条，够看又不会把任务对象撑大
+
+/**
+ * 切换阶段。
+ *
+ * 这里顺带维护一份 steps —— 每次切阶段都把上一个收尾、新的标成进行中，
+ * 于是任务卡片能列出「已经走完哪几步、现在卡在哪」。
+ * 整合包装到一半、游戏版本下到一半的时候，光看一根总进度条根本不知道
+ * 到底在干什么，53% 是卡住了还是在跑，全靠猜。
+ */
 export function tstage(t, stage, total = 0) {
   if (!t) return;
+  if (!t.steps) t.steps = [];
+
+  // 上一个还在跑的阶段收尾（同名的话下面会复用，不算结束）
+  const prev = t.steps[t.steps.length - 1];
+  if (prev && prev.status === 'running' && prev.label !== stage) {
+    prev.status = 'done';
+    prev.doneAt = Date.now();
+  }
+
   t.stage = stage;
   t.total = total; t.done = 0; t.percent = 0;
   t.detail = '';
   t.speedBps = 0;
   t._samples = [];
+
+  if (prev && prev.label === stage) {
+    prev.status = 'running';          // 同名阶段再来一轮（比如多轮补前置）
+  } else {
+    t.steps.push({ label: stage, status: 'running', startedAt: Date.now() });
+    if (t.steps.length > MAX_STEPS) t.steps.shift();
+  }
 }
+
+/** 把最后一个还在跑的阶段收尾（完成 / 失败时调用） */
+function closeLastStep(t, status) {
+  if (!t || !t.steps || !t.steps.length) return;
+  const last = t.steps[t.steps.length - 1];
+  if (last.status === 'running') { last.status = status; last.doneAt = Date.now(); }
+}
+
 
 /** 记录已下载字节数并计算滑动窗口速率 */
 export function addBytes(t, n) {
@@ -340,6 +374,7 @@ export function tdone(t, result = null, opts = {}) {
   t.stage = (opts && opts.stage) || '已完成';
   t.warning = (opts && opts.warning) || null;
   t.speedBps = 0;
+  closeLastStep(t, 'done');
   persistHistory(t);
 }
 export function tfail(t, err) {
@@ -347,6 +382,7 @@ export function tfail(t, err) {
   if (t._cancel) {   // 主动取消，不算错误
     t.status = 'cancelled'; t.finishedAt = Date.now(); t.stage = '已取消';
     t.speedBps = 0;
+    closeLastStep(t, 'error');
     persistHistory(t);
     return;
   }
@@ -355,6 +391,7 @@ export function tfail(t, err) {
   t.finishedAt = Date.now();
   t.stage = '失败';
   t.speedBps = 0;
+  closeLastStep(t, 'error');
   tlog(t, '错误: ' + (err?.message || err));
   persistHistory(t);
 }

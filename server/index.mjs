@@ -2096,6 +2096,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
         const dir = path.join(inst.dir, k.dir);
         await fsp.mkdir(dir, { recursive: true });
         const dest = path.join(dir, safeName(fileName));
+        tstage(task, `下载 ${fileName}`, 1);
         tlog(task, `下载 ${fileName}`);
         let last = 0;
         await downloadOne(url, dest, {
