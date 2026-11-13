@@ -30,6 +30,7 @@ import { checkInstanceDeps } from './deps.mjs';
 import { cryptoStatus } from './secure.mjs';
 import { optimizeMemory } from './memory.mjs';
 import { translateQuery, cnName, buildLinks, mcmodSearchUrl, MOD_CN, CFPA_MODS } from './i18n.mjs';
+import { lookupMcmod, listMcmodCache } from './mcmod.mjs';
 import { translateText } from './translate.mjs';
 import { buildIndex, indexStatus, fuzzyLookup } from './search.mjs';
 import { cfSearch, cfProject, cfFiles, cfFileUrl, cfPing } from './curseforge.mjs';
@@ -495,6 +496,36 @@ async function buildOptimizeAdvice(instanceId) {
  *     纯按来源交替又会把热门挤下去
  *   - 某个源挂了不影响另一个，降级返回并在 sources 里说明
  */
+/**
+ * 把用户输入的中文查词变成「真的能搜到东西」的英文词。
+ *
+ * 为什么需要：CurseForge 的搜索接口对中文是静默忽略的（传中文 = 没传搜索词，
+ * 会把全站热门倒序吐回来），Modrinth 也没有中文项目名。
+ * 顺序：本地词典 → MC百科 → 原样。
+ */
+async function resolveQuery(raw) {
+  const q0 = String(raw || '').trim();
+  if (!q0) return { query: '', from: 'empty', original: '' };
+
+  // 1) 本地词典（MOD_CN / CN_ALIASES / PACK_ALIAS）
+  const t = translateQuery(q0);
+  if (t.translated && t.query && !/[\u4e00-\u9fa5]/.test(t.query)) {
+    return { query: t.query, from: 'dict', original: q0, cn: t.pack ? q0 : null };
+  }
+
+  // 2) 词典没有 → 问 MC百科。它的搜索结果条目就是「化龍 (BeLoong)」这种形式，
+  //    中文名和官方英文名一次拿到，不用再点进项目页
+  if (/[\u4e00-\u9fa5]/.test(q0)) {
+    try {
+      const m = await lookupMcmod(q0);
+      if (m && m.en) return { query: m.en, from: 'mcmod', original: q0, cn: m.cn, url: m.url };
+    } catch { /* 查不到就往下走 */ }
+  }
+
+  // 3) 都没辙：原样返回（Modrinth 偶尔能搜到，CurseForge 那边会被 cfSearch 挡掉）
+  return { query: t.query || q0, from: 'raw', original: q0 };
+}
+
 async function searchAllSources({ query = '', kind = 'mod', mcVersion = '', loader = '', offset = 0, limit = 30 } = {}) {
   const cfg = await loadConfig();
   const cfKey = (cfg.curseforgeApiKey || '').trim();
@@ -2004,8 +2035,9 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
     if (!key) return fail(res, '还没有配置 CurseForge API Key，请到「设置 → 内容源」填写', 400);
     try {
       // 中文要先翻成英文：CurseForge 不吃中文，原样传过去等于没传搜索词
+      const rq = await resolveQuery(q.get('query') || '');
       const r = await cfSearch(key, {
-        query: translateQuery(q.get('query') || '').query,
+        query: rq.query,
         kind: q.get('kind') || 'mod',
         mcVersion: q.get('mcVersion') || '',
         loader: q.get('loader') || '',
@@ -2116,15 +2148,16 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
 
   if (p === '/api/search/all') {
     try {
+      const rq = await resolveQuery(q.get('query') || '');
       const r = await searchAllSources({
-        query: translateQuery(q.get('query') || '').query,
+        query: rq.query,
         kind: q.get('kind') || 'mod',
         mcVersion: q.get('mcVersion') || '',
         loader: q.get('loader') || '',
         offset: Number(q.get('offset') || 0),
         limit: Number(q.get('limit') || 30),
       });
-      return ok(res, r);
+      return ok(res, { ...r, queryInfo: rq });
     } catch (e) { return fail(res, '双源搜索失败: ' + e.message, 502); }
   }
   if (p === '/api/mr/search') {
@@ -2134,18 +2167,18 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
       indexStatus().then(st => {
         if (!st.ready && !st.building) buildIndex(() => { }).catch(() => { });
       }).catch(() => { });
-      // 中文关键词自动转成英文检索词（例如「钠」→ sodium）
-      const tq = translateQuery(rawQuery);
+      // 中文关键词自动转成英文检索词（例如「钠」→ sodium，「化龙」→ BeLoong）
+      const rq = await resolveQuery(rawQuery);
       const r = await mrSearch({
-        query: tq.query, kind: q.get('kind') || 'mod',
+        query: rq.query, kind: q.get('kind') || 'mod',
         mcVersion: q.get('mcVersion') || '', loader: q.get('loader') || '',
         offset: Number(q.get('offset') || 0), limit: Number(q.get('limit') || 20),
       });
       return ok(res, {
         ...r,
         queryInfo: {
-          original: rawQuery, used: tq.query,
-          translated: tq.translated, matched: tq.matched,
+          ...rq,
+          original: rawQuery, used: rq.query,
           fuzzyAdded: r.fuzzyAdded || 0,
         },
       });

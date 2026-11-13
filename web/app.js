@@ -1466,8 +1466,10 @@ function renderStoreResults() {
   const box = $('#storeResults');
   const inst = S.instances.find(i => i.id === storeInstanceId());
   const qi = STORE.queryInfo;
-  const transTip = qi?.translated
-    ? `<span class="badge purple" style="margin-left:8px">中文检索：${esc(qi.original)} → ${esc(qi.used)}</span>` : '';
+  // 中文名是怎么变成英文检索词的：词典命中 / MC百科现查 / 没翻出来
+  const transTip = qi && qi.original && qi.used && qi.original !== qi.used
+    ? `<span class="badge purple" style="margin-left:8px" title="${qi.from === 'mcmod' ? '英文名来自 MC百科收录' : '英文名来自内置词典'}">中文检索：${esc(qi.original)} → ${esc(qi.used)}${qi.from === 'mcmod' ? '（MC百科）' : ''}</span>`
+    : '';
   const relaxedTip = STORE.relaxed
     ? `<div class="hint" style="color:var(--warn);margin:0 0 10px">⚠ ${esc(STORE.relaxed)}</div>` : '';
   // 双源检索时把每个源的结果数摊开，用户能看出哪边查了、哪边没查
