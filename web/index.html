@@ -220,9 +220,14 @@
         <div id="dlSecContent" class="hidden">
           <div class="card pad">
             <div class="toolbar">
-              <div class="field grow">
+              <div class="field grow" id="storeInstanceField">
                 <label>下载到实例</label>
                 <select id="storeInstance"><option value="">请先创建实例</option></select>
+              </div>
+              <!-- 整合包用自己的游戏版本、自己开实例，「下载到实例」在这里没有意义 -->
+              <div class="field grow hidden" id="storePackNote">
+                <label>安装方式</label>
+                <div class="pack-note">整合包会<b>单独新建一个实例</b>，并自动装好它指定的 Minecraft 版本与加载器</div>
               </div>
               <div class="field">
                 <label>数据源</label>

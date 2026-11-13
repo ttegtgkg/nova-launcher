@@ -1772,3 +1772,16 @@ html.no-token body > *:not(.no-token-overlay) { filter: blur(2px); pointer-event
   border: 1px solid color-mix(in srgb, var(--warn, #e0a44a) 26%, transparent);
 }
 .task-item.warn .ti-fill { background: var(--warn, #e0a44a) !important; }
+/* 整合包分区：替代「下载到实例」的说明条 */
+.pack-note {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  border-radius: 9px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-dim);
+  background: var(--sunk);
+  border: 1px solid var(--stroke);
+}
+.pack-note b { color: var(--text); }

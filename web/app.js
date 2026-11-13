@@ -449,8 +449,15 @@ function setDownloadSection(sec, { search = false } = {}) {
   if (sub && S.page === 'download') {
     sub.textContent = isGame
       ? '安装原版 Minecraft 或模组加载器'
-      : '搜索模组、光影、资源包与整合包，装进指定实例';
+      : DL_SECTION === 'modpack'
+        ? '挑一个整合包，自动装好它要的游戏版本与加载器'
+        : '搜索模组、光影、资源包与整合包，装进指定实例';
   }
+
+  // 整合包自己开实例、自带游戏版本，「下载到实例」选了也没用，直接换成说明
+  const isPackSec = DL_SECTION === 'modpack';
+  $('#storeInstanceField')?.classList.toggle('hidden', isPackSec);
+  $('#storePackNote')?.classList.toggle('hidden', !isPackSec);
 
   if (isGame) {
     if (!S.versions.length) loadVersions();
@@ -1313,7 +1320,10 @@ async function doStoreSearch() {
   const instId = storeInstanceId();
   const inst = S.instances.find(i => i.id === instId);
   const kindArg = kind === 'modpack' ? 'modpack' : kind;
-  const useLoader = (kind === 'mod' || kind === 'modpack') ? (inst?.loader || '') : '';
+  // 整合包自带游戏版本和加载器，而且装的时候会新建实例 ——
+  // 拿当前实例的版本去筛它，等于把能装的全滤掉了
+  const byInstance = kind !== 'modpack';
+  const useLoader = (byInstance && kind === 'mod') ? (inst?.loader || '') : '';
 
   if (source === 'curseforge') {
     STORE.page = 1;
@@ -1326,8 +1336,9 @@ async function doStoreSearch() {
   STORE.req = {
     mode: source === 'all' ? 'all' : 'mr',
     q, kindArg,
-    version: inst?.version || '', loader: useLoader,
-    withFilter: true, instId, limit: STORE.limit,
+    version: byInstance ? (inst?.version || '') : '',
+    loader: useLoader,
+    withFilter: byInstance, instId, limit: STORE.limit,
   };
   STORE.page = 1;
   return runStoreSearch(1);
@@ -1463,7 +1474,9 @@ function renderStoreResults() {
   const head = `<div class="section-head" style="margin-top:18px">
       <h2>${STORE.kind === 'modpack' ? '整合包' : kindLabel(STORE.kind) + '搜索结果'}
         <span class="muted">共 ${STORE.total} 个${transTip}</span>${srcTip}</h2>
-      <span class="muted">${inst ? '目标实例：' + esc(inst.name) + '（' + esc(inst.version) + ' / ' + esc(loaderName(inst.loader)) + '）' : '未选择实例'}</span>
+      ${STORE.kind === 'modpack'
+      ? '<span class="muted">整合包自带游戏版本，装的时候会新建实例</span>'
+      : `<span class="muted">${inst ? '目标实例：' + esc(inst.name) + '（' + esc(inst.version) + ' / ' + esc(loaderName(inst.loader)) + '）' : '未选择实例'}</span>`}
     </div>${relaxedTip}`;
 
   if (!STORE.hits.length) {
@@ -3879,10 +3892,12 @@ async function doCfSearch(kind, page = 1) {
   const limit = STORE.limit;
   const offset = (page - 1) * limit;
   try {
+    // 整合包不用实例的版本/加载器去筛（它自带这些，且会新建实例）
+    const byInstance = kind !== 'modpack';
     const r = await apiGet(`/api/cf/search?query=${encodeURIComponent(q)}&kind=${kind}`
       + `&offset=${offset}&limit=${limit}`
-      + `&mcVersion=${encodeURIComponent(inst?.version || '')}`
-      + `&loader=${encodeURIComponent(kind === 'mod' ? (inst?.loader || '') : '')}`);
+      + `&mcVersion=${encodeURIComponent(byInstance ? (inst?.version || '') : '')}`
+      + `&loader=${encodeURIComponent(byInstance && kind === 'mod' ? (inst?.loader || '') : '')}`);
     STORE.hits = (r.hits || []).map(h => ({ ...h, sourceKind: 'curseforge' }));
     STORE.total = r.total || 0;
     STORE.queryInfo = null;
