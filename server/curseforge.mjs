@@ -176,6 +176,25 @@ export async function cfFileUrl(apiKey, modId, fileId) {
   return data.data || null;   // string（可下载）或 null（作者禁止第三方分发）
 }
 
+/**
+ * 查单个文件的元信息：大小 + 下载地址。
+ *
+ * 用来做「下载前先摸清总量」：整合包 manifest 只给 projectID/fileID，
+ * 不给文件大小。不预先扫一遍的话，进度条的分母会在下载途中不断变大
+ * （下完 63 MB 的整合包显示 100%，一开始下 mod 又掉回 62%）。
+ * 顺便把下载地址一起拿回来，真正下载时就能少打一次 API。
+ */
+export async function cfFileMeta(apiKey, modId, fileId) {
+  const data = await cfGet(apiKey, `/mods/${encodeURIComponent(modId)}/files/${encodeURIComponent(fileId)}`);
+  const f = data.data || {};
+  return {
+    id: String(f.id || fileId),
+    fileName: f.fileName || null,
+    size: Number(f.fileLength) || 0,
+    downloadUrl: f.downloadUrl || null,
+  };
+}
+
 /* --------------------------------------------------- 按 modId 反查项目 */
 
 // 用来把连写的 modId 拆成词。覆盖不到的就真拆不开了，宁可搜不到也别乱认。

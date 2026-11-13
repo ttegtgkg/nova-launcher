@@ -37,3 +37,8 @@ desktop.ini
 _*.mjs
 _*.js
 ~$*
+
+# ===== 开发时随手截的图 / 临时脚本 =====
+lg*.png
+tmp-*
+shot*.png

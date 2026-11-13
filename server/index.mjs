@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import {
   ROOT, DATA, SHARED, INSTANCES, RUNTIME, CACHE, P, ensureDirs, loadConfig, saveConfig,
   createTask, taskPublic, listTasks, getTask, tlog, tstage, tprogress, tdone, tfail, redactConfig,
-  cancelTask, getHistory, clearHistory, taddFile, addBytes, MARKER_FILE, setExtraGameDirs, getExtraGameDirs, gameRoots,
+  cancelTask, getHistory, clearHistory, taddFile, addBytes, tplanBytes, MARKER_FILE, setExtraGameDirs, getExtraGameDirs, gameRoots,
   httpText, readJson, writeJson, existsSync, exists, downloadOne, totalMemoryMb, freeMemoryMb,
   dirSize, safeName, offlineUuid, httpBinary, zipCreate, collectDirEntries, zipExtractAll, zipEntries, zipRead,
 } from './core.mjs';
@@ -33,7 +33,7 @@ import { translateQuery, cnName, buildLinks, mcmodSearchUrl, MOD_CN, CFPA_MODS }
 import { lookupMcmod, listMcmodCache } from './mcmod.mjs';
 import { translateText } from './translate.mjs';
 import { buildIndex, indexStatus, fuzzyLookup } from './search.mjs';
-import { cfSearch, cfProject, cfFiles, cfFileUrl, cfPing } from './curseforge.mjs';
+import { cfSearch, cfProject, cfFiles, cfFileUrl, cfFileMeta, cfPing } from './curseforge.mjs';
 import { createBackup, listBackups, restoreBackup, deleteBackup, autoBackupIfDue } from './backup.mjs';
 import {
   listCustomThemes, parseThemeFile, saveTheme, deleteTheme,
@@ -2314,9 +2314,23 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
           const tmpDir = path.join(CACHE, 'packs');
           await fsp.mkdir(tmpDir, { recursive: true });
           mrpackPath = path.join(tmpDir, safeName(f.filename));
-          tlog(task, `下载 ${f.filename}`);
-          await downloadOne(f.url, mrpackPath, { source: 'official', sha1: f.sha1, size: f.size, timeout: 300000, idleMs: 25000 });
-          taddFile(task, f.size || 0);
+          // 整合包本体动辄几百 MB，下载途中必须报进度 ——
+          // 否则「获取整合包信息」会卡在 0% 几十分钟，看不出是在下还是死了
+          tlog(task, `下载 ${f.filename}${f.size ? `（${Math.round(f.size / 1048576)} MB）` : ''}`);
+          tstage(task, '下载整合包', 1);
+          tplanBytes(task, f.size);
+          let lastMp = 0;
+          await downloadOne(f.url, mrpackPath, {
+            source: 'official', sha1: f.sha1, size: f.size, timeout: 900000, idleMs: 30000,
+            onProgress: (got, total) => {
+              if (!task) return;
+              if (got < lastMp) lastMp = 0;
+              if (got > lastMp) { addBytes(task, got - lastMp); lastMp = got; }
+              if (total) task.bytesTotal = Math.max(task.bytesTotal || 0, total);
+              tprogress(task, 0, `${Math.round(got / 1048576)} MB`);
+            },
+          });
+          taddFile(task, 0);
           tprogress(task, 1);
         }
         if (!mrpackPath || !existsSync(mrpackPath)) throw new Error('整合包文件不存在');
@@ -2403,6 +2417,55 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
         if (!parsed.mcVersion) throw new Error('manifest.json 里没有 Minecraft 版本');
         tlog(task, `MC ${parsed.mcVersion} · ${parsed.loader}${parsed.loaderVersion ? ' ' + parsed.loaderVersion : ''} · ${parsed.files.length} 个模组`);
 
+        /*
+         * 下载前先把要下的东西摸一遍：manifest 只给 projectID/fileID，不给文件大小。
+         * 不预扫的话，进度条的分母会在下载途中不断变大 ——
+         * 下完 63 MB 的整合包显示 100%，一开始下 mod 又掉回 62%。
+         * 顺便把下载地址一起取回来，真正下载时少打一次 API。
+         */
+        tstage(task, '统计下载量', parsed.files.length);
+        {
+          const queue = parsed.files.slice();
+          let scanned = 0;
+          const workers = Math.max(1, Math.min(6, queue.length));
+          await Promise.all(Array.from({ length: workers }, async () => {
+            while (queue.length) {
+              const it = queue.shift();
+              if (!it) break;
+              try {
+                const meta = await cfFileMeta(key, it.modId, it.fileId);
+                it.size = meta.size;
+                it.url = meta.downloadUrl;
+                it.fileName = meta.fileName;
+              } catch { /* 查不到就不算进总量，下载时再兜底 */ }
+              scanned++;
+              tprogress(task, 1, `${scanned}/${parsed.files.length}`);
+            }
+          }));
+          // 总量 = 已知的模组大小 + 整合包 zip 本身 + 游戏本体那堆东西
+          const modBytes = parsed.files.reduce((a, x) => a + (x.size || 0), 0);
+          let gameBytes = 0;
+          try {
+            // 不把游戏本体（jar + 依赖库 + 资源文件）算进来，
+            // 装 MC 那一步会往分母里猛塞一千多 MB，进度条直接从 99% 掉到个位数
+            const vj0 = await getVersionJson(parsed.mcVersion, cfg.source);
+            gameBytes += Number(vj0.downloads?.client?.size) || 0;
+            const plan0 = planLibraries(vj0);
+            for (const d of plan0.downloads) gameBytes += Number(d.size) || 0;
+            const idxId = vj0.assetIndex?.id;
+            if (idxId) {
+              const aj = await readJson(path.join(P.assets, 'indexes', `${idxId}.json`), null);
+              if (aj) for (const o of Object.values(aj.objects || {})) gameBytes += Number(o.size) || 0;
+            }
+          } catch { /* 算不出来就按已知的来 */ }
+          if (task) {
+            task.bytesDone = 0;
+            task.bytesTotal = modBytes + (body.fileSize || 0) + gameBytes;
+          }
+          tlog(task, `预计下载 ${Math.round((modBytes + (body.fileSize || 0) + gameBytes) / 1048576)} MB`
+            + `（整合包 ${Math.round((body.fileSize || 0) / 1048576)} + 游戏本体 ${Math.round(gameBytes / 1048576)} + ${parsed.files.length} 个模组 ${Math.round(modBytes / 1048576)}）`);
+        }
+
         // 整合包自带游戏本体：MC 版本和加载器都要先装好，不能当普通模组塞进某个实例
         let vid = parsed.mcVersion;
         tstage(task, '安装游戏版本', 1);
@@ -2440,6 +2503,8 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
         const modsDir = path.join(rootDir, 'mods');
         await fsp.mkdir(modsDir, { recursive: true });
         let got = 0, missed = 0, moved = 0;
+        // 记下具体是哪些没下来 —— 只报「8 个内容失败」等于让用户自己去猜
+        let missedList = [];
 
         // 并发下载：整合包动辄几十个模组，串行一个个来太慢。
         // 走的是 ForgeCDN 不是 API，所以不受 CurseForge 的接口限流；
@@ -2447,17 +2512,28 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
         const grabOne = async (f) => {
           if (task?._cancel) return;
           try {
-            const u = await cfFileUrl(key, f.modId, f.fileId);
-            if (!u) { missed++; }
-            else {
-              let name = decodeURIComponent((u.split('?')[0].split('/').pop() || '').trim());
+            // 预扫阶段已经拿过下载地址了，直接复用；没有才补查一次
+            const u = f.url || await cfFileUrl(key, f.modId, f.fileId);
+            if (!u) {
+              missed++;
+              (missedList || (missedList = [])).push(f.fileName || `cf-${f.modId}-${f.fileId}`);
+            } else {
+              let name = f.fileName
+                || decodeURIComponent((u.split('?')[0].split('/').pop() || '').trim());
               if (!/\.jar$/i.test(name)) name = `cf-${f.modId}-${f.fileId}.jar`;
               // 先落到 mods 再按内容挑目录：manifest 里不区分类型，
               // 有些整合包会把资源包也列进来，一股脑丢 mods 只会让
               // 游戏报 “not a valid mod file”，东西也白下
               const tmpDest = path.join(modsDir, safeName(name));
+              let lastB = 0;
               await downloadOne(u, tmpDest, {
                 source: 'official', timeout: 300000, idleMs: 30000, retries: 1,
+                onProgress: (got, total) => {
+                  if (!task) return;
+                  if (got < lastB) lastB = 0;
+                  if (got > lastB) { addBytes(task, got - lastB); lastB = got; }
+                  if (total) task.bytesTotal = Math.max(task.bytesTotal || 0, total);
+                },
               });
               const actual = await sniffContentKind(tmpDest);
               if (actual !== 'mod') {
@@ -2467,7 +2543,6 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
                 await fsp.rename(tmpDest, dst).catch(() => { });
                 moved++;
               }
-              addBytes(task, 0);
               got++;
             }
           } catch { missed++; }
@@ -2483,7 +2558,11 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
             await grabOne(f);
           }
         }));
-        if (missed) tlog(task, `⚠ ${missed} 个内容没能下载（作者限制第三方分发或已删除），可以进实例里手动补`);
+        if (missed) {
+          // 只报个数字等于让用户干瞪眼，必须说清是哪几个、去哪儿补
+          tlog(task, `⚠ ${missed} 个内容没能下载：${missedList.slice(0, 10).join('、')}${missedList.length > 10 ? ` 等 ${missedList.length} 个` : ''}`);
+          tlog(task, '   原因多半是作者关闭了第三方下载。去 CurseForge 网页版搜这些名字，手动下载后拖进 mods 文件夹即可。');
+        }
         if (moved) tlog(task, `${moved} 个文件其实是资源包/光影，已放进对应目录`);
 
         // manifest 只列直接内容，前置得靠对账补：NeoForge 那边缺了会整片模组失效
@@ -2507,11 +2586,11 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
         tlog(task, `模组 ${cnt.mod} / 资源包 ${cnt.resourcepack} / 光影 ${cnt.shader}`);
         await saveConfig({ lastInstance: inst.id });
         const stillMissing = (depReport && depReport.failed.length) || 0;
-        tdone(task, { instance: inst, counts: cnt, missed, deps: depReport },
+        tdone(task, { instance: inst, counts: cnt, missed, missedList, deps: depReport },
           (missed || stillMissing)
             ? {
               stage: `已安装${missed ? `，${missed} 个内容需手动补` : ''}${stillMissing ? `，${stillMissing} 个前置缺` : ''}`,
-              warning: `${missed ? `${missed} 个内容作者限制第三方下载` : ''}${missed && stillMissing ? '；' : ''}${stillMissing ? `${stillMissing} 个前置无法自动补齐` : ''}`,
+              warning: `${missed ? `${missed} 个内容作者限制第三方下载（${missedList.slice(0, 3).join('、')}${missedList.length > 3 ? ' 等' : ''}）` : ''}${missed && stillMissing ? '；' : ''}${stillMissing ? `${stillMissing} 个前置无法自动补齐` : ''}`,
             }
             : {});
       } catch (e) { tfail(task, e); }
