@@ -363,12 +363,17 @@ const HISTORY_FILE = path.join(DATA, 'downloads-history.json');
 async function persistHistory(t) {
   try {
     const list = (await readJson(HISTORY_FILE, [])) || [];
+    // 失败清单要跟着历史一起存：只留一句「8 个内容失败」，
+    // 用户想知道是哪 8 个就只能去翻日志
+    const r = t.result || {};
     list.unshift({
       id: t.id, type: t.type, title: t.title, status: t.status,
       createdAt: t.createdAt, finishedAt: t.finishedAt || Date.now(),
       bytes: t.bytesDone || 0, files: t.fileCount || t.total || 0,
       stage: t.stage,
       warning: t.warning || null,
+      missedList: Array.isArray(r.missedList) ? r.missedList.slice(0, 50) : null,
+      skippedList: Array.isArray(r.skippedList) ? r.skippedList.slice(0, 20) : null,
       error: t.error ? String(t.error).split('\n')[0].slice(0, 400) : null,
       retrySpec: t.retrySpec || null,
       logs: t.logs.slice(-40),

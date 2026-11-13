@@ -2575,7 +2575,8 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
           (missed || stillMissing)
             ? {
               stage: `已安装${missed ? `，${missed} 个内容需手动补` : ''}${stillMissing ? `，${stillMissing} 个前置缺` : ''}`,
-              warning: `${missed ? `${missed} 个内容作者限制第三方下载（${missedList.slice(0, 3).join('、')}${missedList.length > 3 ? ' 等' : ''}）` : ''}${missed && stillMissing ? '；' : ''}${stillMissing ? `${stillMissing} 个前置无法自动补齐` : ''}`,
+              // 清单交给 missedList 字段单独展示，这里只说个数，免得同一件事说两遍
+              warning: `${missed ? `${missed} 个内容作者限制第三方下载` : ''}${missed && stillMissing ? '；' : ''}${stillMissing ? `${stillMissing} 个前置无法自动补齐` : ''}`,
             }
             : {});
       } catch (e) { tfail(task, e); }

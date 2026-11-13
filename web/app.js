@@ -2666,6 +2666,13 @@ function renderDownloads() {
         <span>${fmtTime(h.finishedAt)}</span>
       </div>
       ${h.warning ? `<div class="dlt-warn">${esc(h.warning)}</div>` : ''}
+      ${(h.missedList && h.missedList.length)
+        ? `<div class="dlt-warn"><b>这 ${h.missedList.length} 个没下来：</b>${h.missedList.map(x => esc(x)).join('、')}
+             <span class="muted">（作者关闭了第三方下载，去 CurseForge 网页版手动下，拖进 mods 即可）</span></div>`
+        : ''}
+      ${(h.skippedList && h.skippedList.length)
+        ? `<div class="dlt-warn"><b>快照跳过 ${h.skippedList.length} 项：</b>${h.skippedList.map(x => `${esc(x.what)}（${esc(x.why)}）`).join('、')}</div>`
+        : ''}
       ${h.error ? `<div class="dlt-err">${esc(h.error)}</div>` : ''}
     </div>`;
   }).join('') : `<div class="empty" style="padding:30px">
