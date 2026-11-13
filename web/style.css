@@ -1837,3 +1837,12 @@ html.no-token body > *:not(.no-token-overlay) { filter: blur(2px); pointer-event
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* 快照里有文件没进去时的提示 */
+.backup-skip {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--warn, #e0a44a);
+  cursor: help;
+}

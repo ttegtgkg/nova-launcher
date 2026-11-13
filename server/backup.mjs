@@ -20,6 +20,7 @@ const KEEP = 10;                       // 每日/手动快照最多留 10 份，
 const KEEP_LAUNCH = 6;                 // 启动前自动备份单独算，留最近 6 份
 const PER_FILE_CAP = 128 * 1024 * 1024; // 单个文件超 128MB 跳过（超大存档不硬扛）
 const WALL_BACKUP_CAP = 8 * 1024 * 1024; // 壁纸超过 8MB 就不进快照
+const MAX_DIR_DEPTH = 6;                // 存档目录最多往下钻 6 层，再深当异常结构处理
 const AUTO_INTERVAL_MS = 24 * 3600 * 1000;
 
 let running = null;   // 正在跑的备份 Promise
@@ -41,11 +42,23 @@ async function writeIndex(db) {
 
 /* ------------------------------------------------------------ 采集 */
 
+/**
+ * 跳过的东西都记下来。只加统计数字、不告诉用户，等于备份「看起来成功」，
+ * 实际少了一堆文件 —— 等到真要恢复才发现缺，就晚了。
+ * stats.skippedList 每一项形如 { what, why }。
+ */
 async function pushFile(entries, absPath, zipName, stats) {
   try {
     const st = await fsp.stat(absPath);
     if (!st.isFile()) return;
-    if (st.size > PER_FILE_CAP) { stats.skipped++; return; }
+    if (st.size > PER_FILE_CAP) {
+      stats.skipped++;
+      (stats.skippedList || (stats.skippedList = [])).push({
+        what: zipName,
+        why: `超过 ${Math.round(PER_FILE_CAP / 1048576)} MB（实际 ${Math.round(st.size / 1048576)} MB）`,
+      });
+      return;
+    }
     entries.push({ name: zipName, data: await fsp.readFile(absPath) });
     stats.files++;
     stats.bytes += st.size;
@@ -53,7 +66,14 @@ async function pushFile(entries, absPath, zipName, stats) {
 }
 
 async function collectDir(entries, dir, zipPrefix, stats, depth = 0) {
-  if (depth > 6) return;
+  if (depth > MAX_DIR_DEPTH) {
+    stats.skipped++;
+    (stats.skippedList || (stats.skippedList = [])).push({
+      what: zipPrefix,
+      why: `目录层级超过 ${MAX_DIR_DEPTH} 层，整套跳过`,
+    });
+    return;
+  }
   let items = [];
   try { items = await fsp.readdir(dir, { withFileTypes: true }); } catch { return; }
   for (const it of items) {
@@ -133,6 +153,10 @@ async function doBackup({ reason = '手动', instanceId = null, kind = null } = 
           stats.bytes += st.size;
         } else {
           stats.skipped++;
+          (stats.skippedList || (stats.skippedList = [])).push({
+            what: 'wallpapers/' + wallFile,
+            why: `超过 ${Math.round(WALL_BACKUP_CAP / 1048576)} MB`,
+          });
         }
       } catch { /* 图片不在就算了 */ }
     }
@@ -141,11 +165,17 @@ async function doBackup({ reason = '手动', instanceId = null, kind = null } = 
   // 全是空的就别产出垃圾文件
   if (!stats.files) throw new Error('没有可备份的数据（实例和存档都是空的）');
 
+  // 跳过了什么也要写进快照自带的说明里，否则恢复时以为数据是全的
   entries.push({
     name: 'nova-backup.txt',
     data: Buffer.from(
       `Nova Launcher 数据快照\n创建时间: ${new Date().toLocaleString('zh-CN')}\n` +
-      `原因: ${reason}\n文件数: ${stats.files}\n实例数: ${stats.instances}\n`, 'utf8'),
+      `原因: ${reason}\n文件数: ${stats.files}\n实例数: ${stats.instances}\n` +
+      (stats.skipped
+        ? `跳过: ${stats.skipped} 项（这些没进快照）\n`
+        + (stats.skippedList || []).slice(0, 20).map(x => `  ${x.what} —— ${x.why}`).join('\n') + '\n'
+        : ''),
+      'utf8'),
   });
 
   const buf = zipCreate(entries);
@@ -161,6 +191,7 @@ async function doBackup({ reason = '手动', instanceId = null, kind = null } = 
   db.items.unshift({
     file, size: buf.length, time: Date.now(), reason, kind: k,
     files: stats.files, instances: stats.instances, skipped: stats.skipped,
+    skippedList: (stats.skippedList || []).slice(0, 20),
     scope: only || 'all',
   });
   // 轮转分两类算：启动前备份很频繁，不该把每日快照挤掉
@@ -211,6 +242,10 @@ export async function listBackups() {
       scope: meta.scope || null,
       files: meta.files ?? null,
       instances: meta.instances ?? null,
+      // 快照里没装进去的东西，必须跟着列表一起回给前端 ——
+      // 只在 doBackup 里记下、出口不透出去，等于白记
+      skipped: meta.skipped ?? 0,
+      skippedList: meta.skippedList || [],
     });
   }
   out.sort((a, b) => b.file.localeCompare(a.file));

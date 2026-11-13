@@ -3568,6 +3568,11 @@ async function handleDroppedFiles(files) {
           <div class="backup-main">
             <b>${esc(it.file.replace(/^snapshot-|\.zip$/g, ''))}</b>
             <span class="backup-meta">${fmtSize(it.size)} · ${it.instances ?? '?'} 个实例 · ${it.files ?? '?'} 个文件 · ${esc(it.reason)}</span>
+            ${it.skipped
+          ? `<span class="backup-skip" title="${esc((it.skippedList || []).map(x => `${x.what}  —— ${x.why}`).join('\n'))}">
+                   ⚠ 有 ${it.skipped} 项没进这份快照${(it.skippedList || []).length ? `（${esc(it.skippedList[0].what)}${it.skipped > 1 ? ' 等' : ''}：${esc(it.skippedList[0].why)}）` : ''}
+                 </span>`
+          : ''}
           </div>
           <div class="backup-acts">
             <button class="btn btn-soft btn-xs" data-restore="${esc(it.file)}">恢复</button>

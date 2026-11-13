@@ -1,0 +1,32 @@
+fix: 快照里被跳过的文件必须让用户看见
+
+backup.mjs 里有两处「悄悄少东西」：
+
+1. pushFile 里 `if (st.size > PER_FILE_CAP) { stats.skipped++; return; }`
+   —— 超过 128 MB 的文件直接不进快照，只默默把计数加一。
+   而 listBackups 的出口压根没把 skipped 透出去，前端也不显示。
+   结果就是快照"看起来成功"，真到要恢复才发现某个大存档根本没在里面。
+
+2. collectDir 里 `if (depth > 6) return;` —— 魔法数字，而且超限时整套目录
+   静默丢弃，连计数都没有。
+
+改：
+
+- 新增 MAX_DIR_DEPTH = 6 常量，替换裸写的 6
+- pushFile / collectDir / 壁纸超限，三处跳过都记进 stats.skippedList
+  （形如 { what, why }，说清是哪个文件、为什么跳过）
+- 跳过清单写进快照自带的 nova-backup.txt，恢复前就能看到
+- index.json 里存一份，listBackups 的出口带上 skipped / skippedList
+- 前端备份列表在对应条目下显示「⚠ 有 N 项没进这份快照（xxx：超过 128 MB）」
+
+自测（造一个 130 MB 存档验证）：
+
+  列表返回: skipped = 1
+           skippedList = [{ what: "instances/bk-test/saves/w1/big.dat",
+                            why: "超过 128 MB（实际 130 MB）" }]
+  快照内 nova-backup.txt:
+    跳过: 1 项（这些没进快照）
+      instances/bk-test/saves/w1/big.dat —— 超过 128 MB（实际 130 MB）
+
+顺带记一笔：第一次加完只改了 doBackup 的写入、忘了 listBackups 的出口，
+自测时发现 skipped 在列表里是 undefined —— 跟前面那个「改 a 不改 b」一模一样。
