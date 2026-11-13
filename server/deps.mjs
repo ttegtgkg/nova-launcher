@@ -40,31 +40,25 @@ const jarCache = new Map();
 /* ------------------------------------------------------- 版本号比较 */
 
 /**
- * 版本号比较：21.1.81 vs 21.1.75 → 1；13.0.8 vs 13.0.11 → -1。
- * 只处理数字段，字母后缀（如 1.21.1-3.15.0 里的 3.15.0）也按段比。
- * 返回 -1 / 0 / 1，无法比较时返回 null。
+ * 版本号比较：13.0.8 vs 13.0.11 → -1；21.1.219 vs 21.1.221 → -1。
+ *
+ * 只接受「纯数字点分」的版本号。模组生态里的版本串花样太多 ——
+ *   2.0-beta.15               预发布标记
+ *   1.5.0-neoforge+mc1.21.1   版本 + 加载器 + MC 版本拼在一起
+ *   1.21.1-3.15.4             MC 版本 + mod 自己的版本
+ * 这三种的 `-` 含义完全不同，硬拆只会得出「1.5.0 比 1.3.8 旧」这种荒唐结论。
+ * 判断不了就不判 —— 误报比漏报更让人不信任。
  */
+const SIMPLE_VER = /^\d+(\.\d+)*$/;
+
 function cmpVer(a, b) {
-  const seg = (v) => String(v || '').toLowerCase()
-    .replace(/[^\d.a-z-]/g, '.')
-    .split(/[.\-+]/)
-    .filter(Boolean);
+  const seg = (v) => String(v || '').split('.').filter(Boolean).map(Number);
   const sa = seg(a), sb = seg(b);
   const n = Math.max(sa.length, sb.length);
   for (let i = 0; i < n; i++) {
-    const x = sa[i], y = sb[i];
-    if (x === undefined) return -1;
-    if (y === undefined) return 1;
-    const nx = /^\d+$/.test(x) ? Number(x) : null;
-    const ny = /^\d+$/.test(y) ? Number(y) : null;
-    if (nx !== null && ny !== null) {
-      if (nx !== ny) return nx < ny ? -1 : 1;
-    } else if (x !== y) {
-      // 数字优先于字母（1.2.0 > 1.2.0-beta）
-      if (nx !== null) return 1;
-      if (ny !== null) return -1;
-      return x < y ? -1 : 1;
-    }
+    const x = sa[i] === undefined ? 0 : sa[i];
+    const y = sb[i] === undefined ? 0 : sb[i];
+    if (x !== y) return x < y ? -1 : 1;
   }
   return 0;
 }
@@ -72,35 +66,38 @@ function cmpVer(a, b) {
 /**
  * 判断 actual 是否落在 Maven 风格的 range 里。
  * 支持：[1.0,2.0)  (1.0,2.0]  [1.0,)  (,2.0]  *  空  以及裸版本号（当作 >= 处理）。
+ *
+ * 任何一侧不是纯数字点分版本就直接放行（见 cmpVer 的注释）。
  */
 function inRange(actual, range) {
   const r = String(range || '').trim();
   if (!r || r === '*') return true;
   const av = String(actual || '').trim();
-  if (!av) return true;          // 拿不到实际版本就不拦，避免误报
+  if (!av) return true;
+  if (!SIMPLE_VER.test(av)) return true;      // 实际版本是复合写法，不比
 
   // 裸版本号：NeoForge 里写 "1.2.8" 意思是「至少这个版本」
   if (!/^[\[(]/.test(r)) {
-    const c = cmpVer(av, r);
-    return c === null ? true : c >= 0;
+    if (!SIMPLE_VER.test(r)) return true;
+    return cmpVer(av, r) >= 0;
   }
 
   const m = /^([\[(])\s*([^,\])]*)\s*,\s*([^,\])]*)\s*([\])])$/.exec(r);
   if (!m) {
     // 「[1.0]」这种单点精确匹配
     const one = /^[\[(]\s*([^,\])]+)\s*[\])]$/.exec(r);
-    if (one) { const c = cmpVer(av, one[1]); return c === 0; }
+    if (one) return !SIMPLE_VER.test(one[1]) ? true : cmpVer(av, one[1]) === 0;
     return true;
   }
   const [, loOpen, lo, hi, hiClose] = m;
   if (lo) {
+    if (!SIMPLE_VER.test(lo)) return true;
     const c = cmpVer(av, lo);
-    if (c === null) return true;
     if (loOpen === '[' ? c < 0 : c <= 0) return false;
   }
   if (hi) {
+    if (!SIMPLE_VER.test(hi)) return true;
     const c = cmpVer(av, hi);
-    if (c === null) return true;
     if (hiClose === ']' ? c > 0 : c >= 0) return false;
   }
   return true;
@@ -360,6 +357,11 @@ export async function checkInstanceDeps(instanceId, { kind = 'mod', loader: load
     }
 
     // 装了，但版本够不够？不判这一步，就会出现「检查说齐了、NeoForge 说版本不满足」
+    //
+    // 但 minecraft 这一项不判：模组里写的范围五花八门（[1.21,1.21.1)、[1.21]、
+    // >=1.21 <=1.21.1），实际版本却是 1.21.1 —— 按数值比全成了「不满足」，
+    // 一次报出四条假警报。MC 兼容性交给游戏自己判断。
+    if (n.modId === 'minecraft') continue;
     const haveVer = got.version;
     if (haveVer && n.range && !inRange(haveVer, n.range)) {
       const key = `${n.modId}@${n.range}`;
