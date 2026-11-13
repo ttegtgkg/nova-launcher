@@ -80,6 +80,13 @@ export async function cfSearch(apiKey, {
   query = '', kind = 'mod', mcVersion = '', loader = '',
   offset = 0, limit = 20,
 } = {}) {
+  // CurseForge 的搜索接口对中文是「静默忽略」：传中文等于没传 searchFilter，
+  // 它会按人气把全部内容倒序吐回来（totalCount 顶到 10000），看着像搜到了，
+  // 其实一个都不相关。翻译不出英文名就别去搜，交给上层说明情况。
+  if (query && /[\u4e00-\u9fa5]/.test(query)) {
+    return { total: 0, hits: [], sourceKind: 'curseforge', chineseUnsupported: true };
+  }
+
   const data = await cfGet(apiKey, '/mods/search', {
     gameId: GAME_ID,
     classId: CF_CLASS[kind] || CF_CLASS.mod,

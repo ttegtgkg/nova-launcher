@@ -2003,8 +2003,9 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
     const key = (cfg.curseforgeApiKey || '').trim();
     if (!key) return fail(res, '还没有配置 CurseForge API Key，请到「设置 → 内容源」填写', 400);
     try {
+      // 中文要先翻成英文：CurseForge 不吃中文，原样传过去等于没传搜索词
       const r = await cfSearch(key, {
-        query: q.get('query') || '',
+        query: translateQuery(q.get('query') || '').query,
         kind: q.get('kind') || 'mod',
         mcVersion: q.get('mcVersion') || '',
         loader: q.get('loader') || '',

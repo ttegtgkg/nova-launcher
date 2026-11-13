@@ -673,6 +673,31 @@ export const CN_ALIASES = {
   '汉化': ['i18nupdatemod', 'i18nautoupdatemod'],
 };
 
+/**
+ * 中文整合包名 → 平台上的官方英文名。
+ *
+ * 为什么非要有这张表：CurseForge 的搜索接口**直接忽略中文** —— 传「化龙」
+ * 过去等于没传 searchFilter，它会把全部热门整合包按人气倒序吐回来，
+ * 看上去像"搜到了 10000 个结果"，其实一个都对不上。Modrinth 那边也没有中文名。
+ * 所以中文整合包必须先翻译成英文名才搜得到。
+ */
+export const PACK_ALIAS = {
+  '化龙': 'BeLoong',
+  '更好的mc': 'Better MC',
+  '更好mc': 'Better MC',
+  '更好的我的世界': 'Better MC',
+};
+
+/** 查整合包中文别名（大小写不敏感，支持包含匹配） */
+export function packAlias(raw) {
+  const q = String(raw || '').trim().toLowerCase();
+  if (!q) return null;
+  for (const [cn, en] of Object.entries(PACK_ALIAS)) {
+    if (q === cn || q.includes(cn) || cn.includes(q)) return en;
+  }
+  return null;
+}
+
 /** 反向索引：中文关键词 -> [slug...] */
 const REVERSE = (() => {
   const map = new Map();
@@ -702,7 +727,12 @@ export function translateQuery(raw) {
   const hits = [];
   const slugs = new Set();
 
-  // 0) 先查中文别名表（"连锁破坏" 这种口语叫法）
+  // 0) 整合包中文名：表里直接给出官方英文名，命中就走它
+  //    （「化龙」→ BeLoong，否则 CurseForge 会把中文当没传、返回全部热门）
+  const pk = packAlias(q);
+  if (pk) return { query: pk, matched: [q], translated: true, pack: true };
+
+  // 1) 再查中文别名表（"连锁破坏" 这种口语叫法）
   for (const [alias, arr] of Object.entries(CN_ALIASES)) {
     if (q === alias || q.includes(alias) || alias.includes(q)) {
       hits.push(alias === q ? alias : q);
