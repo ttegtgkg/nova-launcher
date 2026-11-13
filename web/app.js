@@ -1017,8 +1017,10 @@ async function openDetail(projectId, opts = {}) {
     const versions = verRes.versions || [];
 
     // 已安装文件名（用于在版本表里标记「已装」）
+    // 整合包会新建实例，没有「装到当前实例里」这回事，也就没有已装一说；
+    // 而且 KINDS 里根本没有 modpack 这一项，查了只会白跑一次请求
     let installed = new Set();
-    if (inst) {
+    if (inst && kind !== 'modpack') {
       try {
         const c = await apiGet(`/api/content?instance=${encodeURIComponent(inst.id)}&kind=${kind}`);
         installed = new Set((c.items || []).map(i => i.name.replace(/\.disabled$/i, '')));
