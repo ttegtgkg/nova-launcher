@@ -1001,7 +1001,9 @@ async function openDetail(projectId, opts = {}) {
   try {
     // 两个平台的项目 id 体系完全不同（MR 是 base62，CF 是数字），
     // 拿 CF 的 id 去查 Modrinth 只会 404，必须按来源分流。
-    const isCf = source === 'curseforge' && kind !== 'modpack';
+    // 以前这里写了 && kind !== 'modpack'，等于把整合包一律当成 Modrinth 的，
+    // 结果 CF 来源的整合包一点「详情」就是 404。
+    const isCf = source === 'curseforge';
     const q = encodeURIComponent(projectId);
     const [prRes, verRes] = await Promise.all([
       apiGet(isCf ? `/api/cf/project?id=${q}` : `/api/mr/project?id=${q}`),
@@ -1175,10 +1177,24 @@ async function openDetail(projectId, opts = {}) {
       $$('[data-install-ver]', tbody).forEach(b => b.onclick = async () => {
         const vid = b.dataset.installVer;
         const v = versions.find(x => x.id === vid);
-        if (!inst) return toast('请先选择一个实例', '在「启动」页点击实例卡片', 'warn');
+        // 整合包自带游戏本体，装的时候会新建实例 —— 不该要求先选一个实例
+        if (!inst && !isPack) return toast('请先选择一个实例', '在「启动」页点击实例卡片', 'warn');
         b.disabled = true; b.textContent = '安装中';
         try {
-          if (isCf) {
+          if (isPack) {
+            if (isCf) {
+              // CurseForge 整合包是 zip + manifest.json，和 .mrpack 两套格式，
+              // 而且它自带 MC 版本与加载器，要新建实例而不是塞进现有实例
+              const f = (v.files || [])[0] || {};
+              await apiPost('/api/cf/pack/install', {
+                modId: p.id || projectId, fileId: vid,
+                name: p.cn || p.title || '整合包',
+                fileName: f.filename, downloadUrl: f.url || null,
+              });
+            } else {
+              await apiPost('/api/pack/install', { project: p.id || projectId, versionId: vid, name: (p.cn || p.title || '整合包') });
+            }
+          } else if (isCf) {
             // CurseForge：走它自己的安装接口，要带上 modId 与 fileId
             const f = (v.files || [])[0] || {};
             if (v.externalOnly || !f.url) {
@@ -1189,8 +1205,6 @@ async function openDetail(projectId, opts = {}) {
               fileName: f.filename, fileSize: f.size, downloadUrl: f.url,
               slug: p.slug, title: p.title, websiteUrl: p.source,
             });
-          } else if (isPack) {
-            await apiPost('/api/pack/install', { project: p.id || projectId, versionId: vid, name: (p.cn || p.title || '整合包') });
           } else {
             await apiPost('/api/mr/install', {
               instance: inst.id, kind, project: p.id || projectId, versionId: vid,
@@ -1347,11 +1361,13 @@ async function runStoreSearch(page) {
         } else {
           STORE.relaxed = null;
         }
-      } else if (hits0.length && req.withFilter && (req.version || req.loader)
+      } else if (req.q && hits0.length && req.withFilter && (req.version || req.loader)
         && !hits0.some(h => h.matchType ? h.matchType === 'exact' : exactMatch(h, req.q))) {
         // 有结果但没有「正主」：比如搜「建筑权杖」时 Construction Wand 本体
         // 不支持当前版本被过滤掉了，只剩它的附属。
         // 不强行放宽（那会给你一堆装不上的版本），而是明说一句。
+        // 注意必须有关键词才提示 —— 直接浏览列表时 req.q 是空的，
+        // 会拼出「「」本体可能不支持…」这种没法读的句子。
         STORE.relaxed = `「${req.q}」本体可能不支持 ${req.version}${req.loader ? ' / ' + loaderName(req.loader) : ''}，下面是不限版本也能用的相关模组`;
       } else {
         STORE.relaxed = null;
@@ -1466,18 +1482,18 @@ function renderStoreResults() {
 
   if (STORE.kind === 'modpack') {
     box.innerHTML = head + `<div class="pack-grid">${STORE.hits.map(h => `
-      <div class="pack-card" data-detail="${esc(h.id)}" data-kind="modpack" style="cursor:pointer">
+      <div class="pack-card" data-detail="${esc(h.id)}" data-kind="modpack" data-src="${esc(h.sourceKind || 'modrinth')}" style="cursor:pointer">
         <div class="pack-banner">
           <img src="${authUrl(`/api/proxy?url=${encodeURIComponent(h.icon || '')}`)}" onerror="this.style.display='none'">
           <img class="pack-ico" src="${authUrl(`/api/proxy?url=${encodeURIComponent(h.icon || '')}`)}" onerror="this.style.display='none'">
         </div>
         <div class="pack-body">
-          <div class="pack-title">${esc(h.cn || h.title)}${h.cn ? `<span class="en-sub">${esc(h.title)}</span>` : ''}</div>
+          <div class="pack-title">${esc(h.cn || h.title)}${h.cn ? `<span class="en-sub">${esc(h.title)}</span>` : ''}${sourceBadge(h)}</div>
           <div class="pack-desc">${esc(h.description)}</div>
           <div class="pack-foot">
             <span class="muted">${(h.downloads || 0).toLocaleString()} 次下载</span>
             <div class="row-gap">
-              <button class="btn btn-soft btn-sm" data-detail="${esc(h.id)}" data-kind="modpack">详情</button>
+              <button class="btn btn-soft btn-sm" data-detail="${esc(h.id)}" data-kind="modpack" data-src="${esc(h.sourceKind || 'modrinth')}">详情</button>
             </div>
           </div>
         </div>
@@ -3729,9 +3745,13 @@ async function boot() {
     }, 900);
   }
 
-  // ?detail=<项目id或slug> 直接打开某个内容的详情面板
+  // ?detail=<项目id或slug>&kind=&src= 直接打开某个内容的详情面板
+  // src 不能省：Modrinth 用 base62 id、CurseForge 用数字 id，认错平台就是 404
   const dm = qs.get('detail');
-  if (dm) setTimeout(() => openDetail(dm, { kind: qs.get('kind') || undefined }), 600);
+  if (dm) setTimeout(() => openDetail(dm, {
+    kind: qs.get('kind') || undefined,
+    source: qs.get('src') || undefined,
+  }), 600);
 }
 
 boot();

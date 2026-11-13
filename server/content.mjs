@@ -766,6 +766,51 @@ export async function materializeMrpack(instanceId, parsed, { task, source = 'au
   return { overrides: n, files: items.length, failed: res.failed.length };
 }
 
+/**
+ * 解析 CurseForge 整合包的 manifest.json。
+ * 结构大致是：
+ *   { minecraft: { version: "1.21.1", modLoaders: [{ id: "neoforge-21.1.100", primary: true }] },
+ *     files: [{ projectID, fileID, required }], overrides: "overrides" }
+ * 和 .mrpack 是两套格式：CF 只记 projectID/fileID，模组得按这两个号一个个去下。
+ */
+export async function parseCfPack(zipPath) {
+  const buf = await fsp.readFile(zipPath);
+  const entries = zipEntries(buf);
+  const e = entries.find(x => x.name === 'manifest.json' || /(^|\/)manifest\.json$/.test(x.name));
+  if (!e) throw new Error('不是 CurseForge 整合包（缺少 manifest.json）');
+  let j;
+  try { j = JSON.parse(zipRead(buf, e).toString('utf8')); }
+  catch { throw new Error('manifest.json 解析失败'); }
+
+  const mc = j.minecraft || {};
+  const list = mc.modLoaders || [];
+  const ml = list.find(x => x.primary) || list[0] || {};
+  const raw = String(ml.id || '');            // 形如 neoforge-21.1.100 / forge-47.2.0
+  let loader = 'vanilla', loaderVersion = null;
+  const m = /^([a-zA-Z]+)-(.+)$/.exec(raw);
+  if (m) {
+    const kind = m[1].toLowerCase();
+    loaderVersion = m[2];
+    if (kind === 'neoforge' || kind === 'neo') loader = 'neoforge';
+    else if (kind === 'forge') loader = 'forge';
+    else if (kind === 'fabric') loader = 'fabric';
+    else if (kind === 'quilt') loader = 'quilt';
+  }
+
+  const files = (j.files || [])
+    .filter(f => f && f.required !== false && f.projectID && f.fileID)
+    .map(f => ({ modId: String(f.projectID), fileId: String(f.fileID) }));
+
+  return {
+    name: j.name || null,
+    packVersion: j.version || null,
+    mcVersion: mc.version || null,
+    loader, loaderVersion,
+    overrides: j.overrides || 'overrides',
+    files,
+  };
+}
+
 /** 普通 zip 整合包：把 mods/ 与其余内容直接展开 */
 export async function materializeZipPack(instanceId, zipPath, { task } = {}) {
   const buf = await fsp.readFile(zipPath);

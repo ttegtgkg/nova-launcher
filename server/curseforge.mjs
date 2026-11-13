@@ -16,6 +16,9 @@ const GAME_ID = 432;               // Minecraft
 export const CF_CLASS = {
   mod: 6, modpack: 4471, resourcepack: 12, shader: 6552, datapack: 6945, world: 17,
 };
+/** classId → 我们这边的 kind（搜索结果的 projectType 要用真实类别，不能一律写 mod） */
+const CF_KIND_BY_CLASS = Object.fromEntries(
+  Object.entries(CF_CLASS).map(([k, v]) => [v, k]));
 export const CF_LOADER = { forge: 1, fabric: 4, quilt: 5, neoforge: 6 };
 
 async function cfGet(apiKey, path, query = null) {
@@ -65,7 +68,7 @@ function toHit(m) {
     icon: (m.logo && m.logo.thumbnailUrl) || null,
     categories: (m.categories || []).map(c => c.name),
     versions: [],
-    projectType: 'mod',
+    projectType: CF_KIND_BY_CLASS[m.classId] || 'mod',
     updated: m.dateModified || m.dateCreated || null,
     source: links.websiteUrl || null,
     license: null,
@@ -110,7 +113,8 @@ export async function cfProject(apiKey, modId) {
     description: m.summary || '',
     cnDescription: null,
     body: '',
-    projectType: 'mod',
+    projectType: CF_KIND_BY_CLASS[m.classId] || 'mod',
+    classId: m.classId || null,
     categories: (m.categories || []).map(c => c.name),
     loaders: [],
     gameVersions: [],

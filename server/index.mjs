@@ -24,7 +24,7 @@ import {
   KINDS, listInstances, getInstance, createInstance, updateInstance, deleteInstance,
   duplicateInstance, listContents, toggleContent, deleteContent, importContent, ensureInstanceDirs,
   mrSearch, mrVersions, mrInstall, installMrpack, materializeMrpack, materializeZipPack,
-  instanceDir, installCfpaMod, cfpaStatus, mrProject, autoInstallMissingDeps, writeSource,
+  instanceDir, installCfpaMod, cfpaStatus, mrProject, autoInstallMissingDeps, writeSource, parseCfPack,
 } from './content.mjs';
 import { checkInstanceDeps } from './deps.mjs';
 import { cryptoStatus } from './secure.mjs';
@@ -2306,6 +2306,107 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
         tlog(task, `模组 ${cnt.mod} / 资源包 ${cnt.resourcepack} / 光影 ${cnt.shader}`);
         await saveConfig({ lastInstance: inst.id });
         tdone(task, { instance: inst, ...mat, counts: cnt });
+      } catch (e) { tfail(task, e); }
+    })();
+    return ok(res, { task: taskPublic(task) });
+  }
+  /* ---- CurseForge 整合包：zip + manifest.json ---- */
+  if (p === '/api/cf/pack/install' && req.method === 'POST') {
+    const cfg = await loadConfig();
+    const key = (cfg.curseforgeApiKey || '').trim();
+    if (!key) return fail(res, '还没有配置 CurseForge API Key', 400);
+    if (!body.modId || !body.fileId) return fail(res, '缺少 modId / fileId', 400);
+    const task = createTask('pack', `安装整合包 ${body.name || ''}`, {
+      retrySpec: { api: '/api/cf/pack/install', body },
+    });
+
+    (async () => {
+      try {
+        tstage(task, '获取下载地址', 1);
+        let url = body.downloadUrl || null;
+        if (!url) url = await cfFileUrl(key, body.modId, body.fileId);
+        if (!url) {
+          throw new Error('作者关闭了第三方下载，只能到 CurseForge 网页手动下载后再拖进启动器');
+        }
+        const tmpDir = path.join(CACHE, 'packs');
+        await fsp.mkdir(tmpDir, { recursive: true });
+        const zipPath = path.join(tmpDir, safeName(`cf-${body.modId}-${body.fileId}.zip`));
+        tlog(task, `下载整合包 ${body.fileName || ''}`);
+        let last = 0;
+        await downloadOne(url, zipPath, {
+          source: 'official', timeout: 900000, idleMs: 30000, retries: 2,
+          onProgress: (got) => {
+            if (!task) return;
+            if (got < last) last = 0;
+            if (got > last) { addBytes(task, got - last); last = got; }
+          },
+        });
+        taddFile(task, 0);
+
+        tstage(task, '解析整合包', 1);
+        const parsed = await parseCfPack(zipPath);
+        if (!parsed.mcVersion) throw new Error('manifest.json 里没有 Minecraft 版本');
+        tlog(task, `MC ${parsed.mcVersion} · ${parsed.loader}${parsed.loaderVersion ? ' ' + parsed.loaderVersion : ''} · ${parsed.files.length} 个模组`);
+
+        // 整合包自带游戏本体：MC 版本和加载器都要先装好，不能当普通模组塞进某个实例
+        let vid = parsed.mcVersion;
+        tstage(task, '安装游戏版本', 1);
+        await installVersion(parsed.mcVersion, { source: cfg.source, concurrency: cfg.downloadConcurrency, task });
+        if (parsed.loader !== 'vanilla' && parsed.loaderVersion) {
+          if (parsed.loader === 'fabric' || parsed.loader === 'quilt') {
+            const r = await installFabricLike(parsed.loader, parsed.mcVersion, parsed.loaderVersion, { source: cfg.source, task });
+            vid = r.versionId;
+          } else {
+            const javas = await getJavas();
+            const pick = pickJava(javas, 17, 'auto');
+            if (!pick.java) throw new Error('需要 Java 17+ 才能安装 Forge/NeoForge，请先到「设置 → Java 运行时」装一个');
+            const r = await installForgeLike(parsed.loader, parsed.mcVersion, parsed.loaderVersion, pick.java.path, { source: cfg.source, task });
+            vid = r.versionId;
+          }
+        }
+
+        tstage(task, '创建实例', 1);
+        const inst = await createInstance({
+          name: body.name || parsed.name || '整合包实例',
+          version: parsed.mcVersion, loader: parsed.loader,
+          loaderVersion: parsed.loaderVersion, versionId: vid,
+          memory: recommendMemoryMb(), jvmPreset: 'aikar',
+          rootDir: body.rootDir || null,
+        });
+        tlog(task, `实例已创建: ${inst.name} (${inst.id})`);
+
+        // overrides/ 里的配置、资源包、存档先铺好
+        tstage(task, '展开整合包文件', 1);
+        await materializeZipPack(inst.id, zipPath, { task });
+
+        // manifest 只给 projectID/fileID，模组得一个个按号去要
+        tstage(task, '下载模组', parsed.files.length);
+        const modsDir = path.join(P.instance(inst.id), 'mods');
+        await fsp.mkdir(modsDir, { recursive: true });
+        let got = 0, missed = 0;
+        for (const f of parsed.files) {
+          if (task?._cancel) break;
+          try {
+            const u = await cfFileUrl(key, f.modId, f.fileId);
+            if (!u) { missed++; continue; }
+            let name = decodeURIComponent((u.split('?')[0].split('/').pop() || '').trim());
+            if (!/\.jar$/i.test(name)) name = `cf-${f.modId}-${f.fileId}.jar`;
+            await downloadOne(u, path.join(modsDir, safeName(name)), {
+              source: 'official', timeout: 300000, idleMs: 30000, retries: 1,
+            });
+            addBytes(task, 0);
+            got++;
+          } catch { missed++; }
+          tprogress(task, 1, `${got + missed}/${parsed.files.length}`);
+        }
+        if (missed) tlog(task, `⚠ ${missed} 个模组没能下载（作者限制第三方分发或已删除），可以进实例里手动补`);
+
+        const cnt = { mod: 0, resourcepack: 0, shader: 0 };
+        for (const kk of ['mod', 'resourcepack', 'shader']) cnt[kk] = (await listContents(inst.id, kk)).length;
+        tlog(task, `模组 ${cnt.mod} / 资源包 ${cnt.resourcepack} / 光影 ${cnt.shader}`);
+        await saveConfig({ lastInstance: inst.id });
+        tdone(task, { instance: inst, counts: cnt, missed },
+          missed ? { stage: `已安装，${missed} 个模组需手动补`, warning: `${missed} 个模组作者限制第三方下载` } : {});
       } catch (e) { tfail(task, e); }
     })();
     return ok(res, { task: taskPublic(task) });
