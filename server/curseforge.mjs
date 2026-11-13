@@ -176,6 +176,116 @@ export async function cfFileUrl(apiKey, modId, fileId) {
   return data.data || null;   // string（可下载）或 null（作者禁止第三方分发）
 }
 
+/* --------------------------------------------------- 按 modId 反查项目 */
+
+// 用来把连写的 modId 拆成词。覆盖不到的就真拆不开了，宁可搜不到也别乱认。
+const SPLIT_WORDS = [
+  'spellbooks', 'spells', 'features', 'texture', 'delight', 'library', 'config',
+  'trees', 'grow', 'forest', 'twilight', 'puzzles', 'survival', 'dragon', 'entity',
+  'bookshelf', 'books', 'shelf', 'farmers', 'farmer', 'cloth', 'irons', 'iron',
+  'biomes', 'weve', 'gone', 'the', 'oh', 'youll', 'and', 'api', 'lib', 'core',
+];
+
+/** 贪心把连写串拆成词：ohthetreesyoullgrow → [oh, the, trees, youll, grow] */
+function tokenize(flat) {
+  const words = [...SPLIT_WORDS].sort((a, b) => b.length - a.length);
+  const out = [];
+  let i = 0;
+  while (i < flat.length) {
+    const w = words.find(x => flat.startsWith(x, i));
+    if (w) { out.push(w); i += w.length; }
+    else { out.push(flat[i]); i += 1; }
+  }
+  return out;
+}
+
+/**
+ * 把一个 modId 变成几种可能被 CF 搜到的写法。
+ * CurseForge 的搜索对标点很敏感：`farmersdelight` 搜不到 "Farmer's Delight"，
+ * `cloth_config` 也搜不到 "Cloth Config API"，得把下划线换成空格再试。
+ */
+function queryVariants(modId) {
+  const base = String(modId || '').toLowerCase().trim();
+  if (!base) return [];
+  const out = new Set([base, base.replace(/[_-]/g, ' '), base.replace(/[_-]/g, '-')]);
+  const flat = base.replace(/[_-]/g, '');
+
+  // 词表按长度降序，贪心从左往右切：ohthetreesyoullgrow → oh the trees youll grow
+  const joined = tokenize(flat).join(' ');
+  if (joined.includes(' ')) { out.add(joined); out.add(joined.replace(/ /g, '-')); }
+
+  // 再从每个已知词的位置切一刀（词表没覆盖全时的兜底）
+  const words = [...SPLIT_WORDS].sort((a, b) => b.length - a.length);
+  for (const w of words) {
+    const idx = flat.indexOf(w);
+    if (idx <= 0) continue;
+    const seg = [flat.slice(0, idx), w, flat.slice(idx + w.length)].filter(Boolean);
+    out.add(seg.join(' '));
+    out.add(seg.join('-'));
+  }
+  // 「the xxx」和「xxx」互试一次
+  for (const v of [...out]) {
+    if (v.startsWith('the ')) out.add(v.slice(4));
+    else out.add('the ' + v);
+  }
+  return [...out].filter(Boolean);
+}
+
+/**
+ * 用 modId 去 CurseForge 找一个能装的项目。
+ * 只在「slug 或标题规范化后完全一致」时才认，避免把前置猜成某个附属模组。
+ * @returns {Promise<{id, slug, title, file}|null>}
+ */
+export async function cfFindByModId(apiKey, modId, { mcVersion = '', loader = '' } = {}) {
+  const want = String(modId || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (!want) return null;
+  const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+  for (const q of queryVariants(modId)) {
+    let hits = [];
+    try { hits = (await cfSearch(apiKey, { query: q, kind: 'mod', limit: 20 })).hits || []; } catch { continue; }
+
+    /*
+     * 匹配放宽到三种情况，都只在「整串对得上」时才算：
+     *   1. 完全一致                    bookshelf = bookshelf
+     *   2. 带/不带 the 前缀             twilightforest ~ the-twilight-forest
+     *   3. 标题是「正主 + 后缀」        ftblibrary ~ ftb-library-forge
+     * 第三种容易误伤（farmersdelight 会撞上 Farmers Delight Extended），
+     * 所以要求正主名字至少 8 个字符，且候选不能带 Extended/Addon/Plus 这类后缀。
+     */
+    const BAD = /extended|addon|plus|compat|integration|patch|tweak|fork|revival/i;
+    const wantTokens = tokenize(want).filter(t => t.length > 1);
+    const hit = hits.find(h => norm(h.slug) === want)
+      || hits.find(h => norm(h.title) === want)
+      || hits.find(h => {
+        const s = norm(h.slug), t = norm(h.title);
+        return s === 'the' + want || t === 'the' + want
+          || s === want + 'the' || t === want + 'the';
+      })
+      || (want.length >= 8 ? hits.find(h => {
+        const s = norm(h.slug), t = norm(h.title);
+        if (BAD.test(String(h.title || '')) || BAD.test(String(h.slug || ''))) return false;
+        // 只认「正主在前、后面多一截」的情况，反过来容易认成附属
+        return s.startsWith(want) || t.startsWith(want) || s.endsWith(want) || t.endsWith(want);
+      }) : null)
+      // 「Iron's Spells 'n Spellbooks」这种：英文名里插了 'n / and 之类的连接词，
+      // 整串对不上，但正主的每个词都在标题里 —— 词都在就算匹配
+      || (wantTokens.length >= 2 ? hits.find(h => {
+        if (BAD.test(String(h.title || ''))) return false;
+        const got = new Set(tokenize(norm(h.title)).filter(x => x.length > 1));
+        return wantTokens.every(t => got.has(t));
+      }) : null);
+    if (!hit) continue;
+
+    let files = [];
+    try { files = await cfFiles(apiKey, hit.id, { mcVersion, loader }); } catch { }
+    const file = files.find(f => /release/i.test(String(f.displayName || '')) || true) || files[0];
+    if (!file) continue;
+    return { id: hit.id, slug: hit.slug, title: hit.title, file };
+  }
+  return null;
+}
+
 /** 探活：确认 key 是否可用 */
 export async function cfPing(apiKey) {
   try {

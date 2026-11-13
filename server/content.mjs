@@ -5,12 +5,13 @@ import crypto from 'node:crypto';
 import {
   P, INSTANCES, CACHE, exists, existsSync, readJson, writeJson, httpJson,
   downloadOne, downloadBatch, tlog, tstage, tprogress, taddFile, addBytes, zipEntries, zipRead,
-  zipExtractAll, safeName, dirSize,
+  zipExtractAll, safeName, dirSize, loadConfig,
   registerInstanceDir, forgetInstanceDir, gameRoots, getExtraGameDirs,
 } from './core.mjs';
 import { cnName, cnDescription, buildLinks, MOD_CN, CFPA_MODS } from './i18n.mjs';
 import { fuzzyLookup, needsFuzzy } from './search.mjs';
 import { checkInstanceDeps } from './deps.mjs';
+import { cfFindByModId, cfFileUrl } from './curseforge.mjs';
 
 /* --------------------------------------------------------------- 实例管理 */
 
@@ -599,7 +600,7 @@ export async function mrInstall(instanceId, kind, projectId, { versionId = null,
  * 查不到再用搜索，只在「slug 完全一致」或「标题规范化后一致」时才认，
  * 免得把 create 猜成某个叫「Create Xxx」的附属模组。
  */
-async function findProjectByModId(modId) {
+export async function findProjectByModId(modId) {
   const id = String(modId || '').toLowerCase();
   if (!id) return null;
 
@@ -645,39 +646,68 @@ export async function autoInstallMissingDeps(instanceId, { task, mcVersion, load
     for (const m of todo) {
       tried.add(m.modId);
       const proj = await findProjectByModId(m.modId).catch(() => null);
-      if (!proj) {
-        report.failed.push({ modId: m.modId, reason: 'Modrinth 上找不到对应项目', neededBy: m.neededBy });
-        tlog(task, `缺少前置 ${m.modId}，但 Modrinth 上找不到对应项目（被 ${m.neededBy.join('、')} 需要）`);
-        continue;
-      }
-      // 先看这个前置到底有没有适配当前版本/加载器的文件 —— 没有的话装不了，
-      // 而且说明是「这个模组在当前版本用不了」，得明确告诉用户，
-      // 别只丢一句「安装失败」让人去猜（Create 只支持到 1.21.1，
-      // 26.1.2 的「精妙背包×机械动力集成」就是这种死局）。
       let vers = [];
-      try { vers = await mrVersions(proj.id, { mcVersion, loader }); } catch { }
-      if (!vers.length) {
-        const verLabel = `MC ${mcVersion}${loader ? ' / ' + loader : ''}`;
-        report.failed.push({
-          modId: m.modId, slug: proj.slug, title: proj.title, unsupported: true,
-          reason: `该前置没有适配 ${verLabel} 的版本`,
-          neededBy: m.neededBy,
-        });
-        tlog(task, `前置 ${proj.title} 没有适配 ${verLabel} 的版本 —— 需要它的模组在当前版本无法使用`);
-        continue;
+      if (proj) { try { vers = await mrVersions(proj.id, { mcVersion, loader }); } catch { } }
+      const verLabel = `MC ${mcVersion}${loader ? ' / ' + loader : ''}`;
+
+      /*
+       * 先走 Modrinth。行不通再拿 CurseForge 兜底 ——
+       * CF 整合包的前置大多只在 CF 上发（bookshelf / puzzleslib / ftblibrary /
+       * twilightforest …），而且 Modrinth 的 slug 和 jar 里的 modId 经常对不上
+       * （modId 是 bookshelf，slug 是 bookshelf-lib），所以单靠 Modrinth 基本补不上。
+       */
+      if (proj && vers.length) {
+        tlog(task, `检测到缺少前置 ${m.modId}（被 ${m.neededBy.join('、')} 需要），从 Modrinth 补装 ${proj.title}`);
+        try {
+          const res = await mrInstall(instanceId, 'mod', proj.id, { mcVersion, loader, withDeps: true, task, _chain: [] });
+          report.fixed.push({
+            modId: m.modId, slug: proj.slug, title: proj.title,
+            file: res.installed?.[0]?.file || null, from: 'modrinth',
+          });
+          if (task) tprogress(task, 1, m.modId);
+          continue;
+        } catch (e) {
+          tlog(task, `前置 ${m.modId} 从 Modrinth 自动安装失败: ${e.message}，改试 CurseForge`);
+        }
       }
 
-      tlog(task, `检测到缺少前置 ${m.modId}（被 ${m.neededBy.join('、')} 需要），从 Modrinth 补装 ${proj.title}`);
+      // —— CurseForge 兜底 ——
       try {
-        const res = await mrInstall(instanceId, 'mod', proj.id, { mcVersion, loader, withDeps: true, task, _chain: [] });
-        report.fixed.push({
-          modId: m.modId, slug: proj.slug, title: proj.title,
-          file: res.installed?.[0]?.file || null,
-        });
+        const cfg = await loadConfig();
+        const cfKey = (cfg.curseforgeApiKey || '').trim();
+        if (cfKey) {
+          const found = await cfFindByModId(cfKey, m.modId, { mcVersion, loader });
+          if (found) {
+            const url = await cfFileUrl(cfKey, found.id, found.file.id);
+            if (url) {
+              const modsDir = path.join(P.instance(instanceId), 'mods');
+              await fsp.mkdir(modsDir, { recursive: true });
+              const dest = path.join(modsDir, safeName(found.file.fileName));
+              await downloadOne(url, dest, { source: 'official', timeout: 300000, idleMs: 30000, retries: 1 });
+              report.fixed.push({
+                modId: m.modId, slug: found.slug, title: found.title,
+                file: found.file.fileName, from: 'curseforge',
+              });
+              tlog(task, `从 CurseForge 补上前置 ${found.title}（${found.file.fileName}）`);
+              if (task) tprogress(task, 1, m.modId);
+              continue;
+            }
+          }
+        }
       } catch (e) {
-        report.failed.push({ modId: m.modId, slug: proj.slug, title: proj.title, reason: e.message, neededBy: m.neededBy });
-        tlog(task, `前置 ${m.modId} 自动安装失败: ${e.message}`);
+        tlog(task, `前置 ${m.modId} 在 CurseForge 上也没补上: ${e.message}`);
       }
+
+      // 两条路都不行
+      report.failed.push({
+        modId: m.modId, slug: proj?.slug || null, title: proj?.title || null,
+        unsupported: !!(proj && !vers.length),
+        reason: proj && !vers.length ? `Modrinth 上没有适配 ${verLabel} 的版本，CurseForge 也没找到可用文件`
+          : 'Modrinth 与 CurseForge 都没找到可用的对应项目',
+        neededBy: m.neededBy,
+      });
+      if (task) tprogress(task, 1, m.modId);
+      continue;
     }
     round++;
   }

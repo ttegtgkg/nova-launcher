@@ -1,0 +1,29 @@
+fix: 前置补全真正能用（Modrinth 找不到就换 CurseForge）
+
+用户贴的崩溃日志里还有 11 个前置缺失，而启动任务明明走到「核对前置模组」这一步。
+查下来不是没检测到 —— checkInstanceDeps 把 11 个全报对了 —— 是补不上：
+
+  Modrinth 侧 11 个里只有 1 个能找到项目，且没有适配 1.21.1/neoforge 的版本。
+  CF 整合包的前置大多只发在 CurseForge，而且 jar 里的 modId 和 Modrinth 的 slug
+  对不上（bookshelf → bookshelf-lib、ftblibrary → ftb-library-forge）。
+
+改：
+
+- curseforge.mjs 新增 cfFindByModId()：把 modId 拆成多种写法去 CF 搜
+  （下划线换空格、按词表贪心拆连写 ohthetreesyoullgrow → oh the trees youll grow），
+  匹配依次尝试：完全一致 → 带/不带 the → 正主 + 后缀 → 正主的词全都在标题里
+  （后者专门治 "Iron's Spells 'n Spellbooks" 这种插了连接词的名字）。
+  带 extended/addon/plus/fork 这类后缀的直接排除，免得认成附属。
+- autoInstallMissingDeps 加 CurseForge 兜底：Modrinth 找不到项目、或者有项目
+  但没有适配版本时，转去 CF 找项目 + 文件 + 下载地址。
+- 补前置时按每个前置推进度，不再是一条不动的进度条。
+
+实测对用户的 BeLoong 实例（MC 1.21.1 / NeoForge 21.1.219）：
+
+  第一轮补上 6 个（全部来自 CurseForge）
+  第二轮补上 3 个（entity_texture_features / ftblibrary / twilightforest）
+  第三轮补上 4 个（irons_spellbooks、oh the trees youll grow，
+                   以及它俩自己带出来的二级依赖 curios、irons_lib）
+  最终 checkInstanceDeps：扫描 53 个 jar，缺失必需前置 0
+
+顺带把整合包的模组下载改成 4 路并发（原来是一个一个串行等着）。

@@ -2437,33 +2437,49 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
         const modsDir = path.join(rootDir, 'mods');
         await fsp.mkdir(modsDir, { recursive: true });
         let got = 0, missed = 0, moved = 0;
-        for (const f of parsed.files) {
-          if (task?._cancel) break;
+
+        // 并发下载：整合包动辄几十个模组，串行一个个来太慢。
+        // 走的是 ForgeCDN 不是 API，所以不受 CurseForge 的接口限流；
+        // 4 路并发对家用网络和对方 CDN 都比较客气。
+        const grabOne = async (f) => {
+          if (task?._cancel) return;
           try {
             const u = await cfFileUrl(key, f.modId, f.fileId);
-            if (!u) { missed++; continue; }
-            let name = decodeURIComponent((u.split('?')[0].split('/').pop() || '').trim());
-            if (!/\.jar$/i.test(name)) name = `cf-${f.modId}-${f.fileId}.jar`;
-            // 先落到 mods 再按内容挑目录：manifest 里不区分类型，
-            // 有些整合包会把资源包也列进来，一股脑丢 mods 只会让
-            // 游戏报 “not a valid mod file”，东西也白下
-            const tmpDest = path.join(modsDir, safeName(name));
-            await downloadOne(u, tmpDest, {
-              source: 'official', timeout: 300000, idleMs: 30000, retries: 1,
-            });
-            const actual = await sniffContentKind(tmpDest);
-            if (actual !== 'mod') {
-              const dstDir = path.join(rootDir, actual === 'shader' ? 'shaderpacks' : 'resourcepacks');
-              await fsp.mkdir(dstDir, { recursive: true });
-              const dst = path.join(dstDir, safeName(name).replace(/\.jar$/i, '.zip'));
-              await fsp.rename(tmpDest, dst).catch(() => { });
-              moved++;
+            if (!u) { missed++; }
+            else {
+              let name = decodeURIComponent((u.split('?')[0].split('/').pop() || '').trim());
+              if (!/\.jar$/i.test(name)) name = `cf-${f.modId}-${f.fileId}.jar`;
+              // 先落到 mods 再按内容挑目录：manifest 里不区分类型，
+              // 有些整合包会把资源包也列进来，一股脑丢 mods 只会让
+              // 游戏报 “not a valid mod file”，东西也白下
+              const tmpDest = path.join(modsDir, safeName(name));
+              await downloadOne(u, tmpDest, {
+                source: 'official', timeout: 300000, idleMs: 30000, retries: 1,
+              });
+              const actual = await sniffContentKind(tmpDest);
+              if (actual !== 'mod') {
+                const dstDir = path.join(rootDir, actual === 'shader' ? 'shaderpacks' : 'resourcepacks');
+                await fsp.mkdir(dstDir, { recursive: true });
+                const dst = path.join(dstDir, safeName(name).replace(/\.jar$/i, '.zip'));
+                await fsp.rename(tmpDest, dst).catch(() => { });
+                moved++;
+              }
+              addBytes(task, 0);
+              got++;
             }
-            addBytes(task, 0);
-            got++;
           } catch { missed++; }
           tprogress(task, 1, `${got + missed}/${parsed.files.length}`);
-        }
+        };
+
+        const queue = parsed.files.slice();
+        const workers = Math.max(1, Math.min(4, queue.length));
+        await Promise.all(Array.from({ length: workers }, async () => {
+          while (queue.length) {
+            const f = queue.shift();
+            if (!f) break;
+            await grabOne(f);
+          }
+        }));
         if (missed) tlog(task, `⚠ ${missed} 个内容没能下载（作者限制第三方分发或已删除），可以进实例里手动补`);
         if (moved) tlog(task, `${moved} 个文件其实是资源包/光影，已放进对应目录`);
 
