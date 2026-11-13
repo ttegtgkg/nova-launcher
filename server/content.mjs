@@ -625,6 +625,17 @@ export async function findProjectByModId(modId) {
   return null;
 }
 
+/** jar 文件名 → 好念的模组名：biomemusic-1.21-3.5.jar → biomemusic */
+function jarStem(f) {
+  let s = String(f || '').replace(/\.jar$/i, '');
+  for (let i = 0; i < 4; i++) {
+    const cut = s.replace(/[-_][\w.+]*$/, '');
+    if (cut === s || !/[-_]\d|[-_]v\d/i.test(s)) break;
+    s = cut;
+  }
+  return s;
+}
+
 /**
  * 对账并自动补齐缺失的前置。
  *
@@ -657,7 +668,7 @@ export async function autoInstallMissingDeps(instanceId, { task, mcVersion, load
        * （modId 是 bookshelf，slug 是 bookshelf-lib），所以单靠 Modrinth 基本补不上。
        */
       if (proj && vers.length) {
-        tlog(task, `检测到缺少前置 ${m.modId}（被 ${m.neededBy.join('、')} 需要），从 Modrinth 补装 ${proj.title}`);
+        tlog(task, `${m.modId} 缺着（${m.neededBy.map(jarStem).join('、')} 要用），正在补 ${proj.title}`);
         try {
           const res = await mrInstall(instanceId, 'mod', proj.id, { mcVersion, loader, withDeps: true, task, _chain: [] });
           report.fixed.push({
@@ -713,13 +724,27 @@ export async function autoInstallMissingDeps(instanceId, { task, mcVersion, load
   }
 
   if (report.fixed.length) {
-    tlog(task, `已自动补齐 ${report.fixed.length} 个前置：${report.fixed.map(f => f.modId).join('、')}`);
+    tlog(task, `补上了 ${report.fixed.length} 个前置：${report.fixed.map(f => f.modId).join('、')}`);
   }
   if (report.failed.length) {
-    tlog(task, `⚠ ${report.failed.length} 个前置没能补上：` +
-      report.failed.map(f => `${f.modId}（${f.reason}）`).join('；'));
+    // 日志是给人看的，不是给程序看的：
+    // 这里要回答三个问题 —— 缺了什么、谁受影响、我该怎么办。
+    // 一律罗列 cause 只会变成一屏谁都不读的流水账。
+    const names = report.failed.map(f => f.modId);
+    const affected = [...new Set(report.failed.flatMap(f => f.neededBy || []))].map(jarStem).filter(Boolean);
+    tlog(task, `⚠ ${names.length} 个前置没补上：${names.join('、')}`);
+    if (affected.length) {
+      tlog(task, `   受影响的模组：${affected.slice(0, 8).join('、')}`
+        + (affected.length > 8 ? ` 等 ${affected.length} 个` : ''));
+    }
+    tlog(task, '   游戏多半还能启动，但这几个模组不会生效。');
+    tlog(task, '   想补：进实例的「模组」页点「检查前置 → 一键补齐」再试一次；');
+    tlog(task, '   还不行就去 CurseForge 搜上面这些名字，把对应的 .jar 拖进 mods 文件夹。');
   }
-  if (report.remaining.length) {
+  // remaining 和 failed 基本是同一批：前者是「最后还缺的」，后者是「补的时候失败的」。
+  // 两个都说一遍，用户会以为缺了两拨，而且还互相打脸 ——
+  // 上面刚说完「多半还能启动」，这里又来一句「可能无法启动」。
+  if (report.remaining.length && !report.failed.length) {
     tlog(task, `仍有 ${report.remaining.length} 个前置缺失：${report.remaining.map(m => m.modId).join('、')}（游戏可能无法启动）`);
   }
   return report;
