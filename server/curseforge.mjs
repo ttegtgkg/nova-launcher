@@ -200,35 +200,38 @@ function tokenize(flat) {
 }
 
 /**
- * 把一个 modId 变成几种可能被 CF 搜到的写法。
+ * 把一个 modId 变成几种可能被 CF 搜到的写法，**按命中概率排序**。
+ *
  * CurseForge 的搜索对标点很敏感：`farmersdelight` 搜不到 "Farmer's Delight"，
  * `cloth_config` 也搜不到 "Cloth Config API"，得把下划线换成空格再试。
+ *
+ * 注意每个变体都是一次真实 API 请求：不排序、不限量的话，
+ * `ohthetreesyoullgrow` 这种长名字能生成 20 多个变体，
+ * 一次补全就能打出上百个请求，白白撞人家的限流。
  */
 function queryVariants(modId) {
   const base = String(modId || '').toLowerCase().trim();
   if (!base) return [];
-  const out = new Set([base, base.replace(/[_-]/g, ' '), base.replace(/[_-]/g, '-')]);
   const flat = base.replace(/[_-]/g, '');
 
-  // 词表按长度降序，贪心从左往右切：ohthetreesyoullgrow → oh the trees youll grow
+  const tier1 = [base, base.replace(/[_-]/g, ' '), base.replace(/[_-]/g, '-')];   // 最高
   const joined = tokenize(flat).join(' ');
-  if (joined.includes(' ')) { out.add(joined); out.add(joined.replace(/ /g, '-')); }
-
-  // 再从每个已知词的位置切一刀（词表没覆盖全时的兜底）
-  const words = [...SPLIT_WORDS].sort((a, b) => b.length - a.length);
-  for (const w of words) {
+  const tier2 = joined.includes(' ') ? [joined, joined.replace(/ /g, '-')] : [];   // 拆词
+  const tier3 = [];                                                                // 单词位置切分
+  for (const w of [...SPLIT_WORDS].sort((a, b) => b.length - a.length)) {
     const idx = flat.indexOf(w);
     if (idx <= 0) continue;
     const seg = [flat.slice(0, idx), w, flat.slice(idx + w.length)].filter(Boolean);
-    out.add(seg.join(' '));
-    out.add(seg.join('-'));
+    tier3.push(seg.join(' '), seg.join('-'));
   }
-  // 「the xxx」和「xxx」互试一次
-  for (const v of [...out]) {
-    if (v.startsWith('the ')) out.add(v.slice(4));
-    else out.add('the ' + v);
-  }
-  return [...out].filter(Boolean);
+  const out = [];
+  const push = (v) => { if (v && !out.includes(v)) out.push(v); };
+  for (const v of [...tier1, ...tier2]) push(v);
+  // 「the xxx」/「xxx」两种写法各试一次，放在拆词之后
+  for (const v of [...out]) push(v.startsWith('the ') ? v.slice(4) : 'the ' + v);
+  for (const v of tier3) push(v);
+
+  return out.slice(0, 8);   // 上限：8 次请求还找不到就认了，别硬撞限流
 }
 
 /**
