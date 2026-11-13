@@ -819,14 +819,45 @@ export async function installForgeLike(loader, mcVersion, loaderVersion, javaExe
     const ps = spawn(javaExe, args, {
       cwd: SHARED, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
     });
-    ps.stdout.on('data', d => d.toString().split(/\r?\n/).filter(Boolean).forEach(l => tlog(task, l.slice(0, 300))));
-    ps.stderr.on('data', d => d.toString().split(/\r?\n/).filter(Boolean).forEach(l => tlog(task, l.slice(0, 300))));
-    ps.on('exit', c => resolve(c));
-    ps.on('error', () => resolve(-1));
+    /*
+     * 安装器的原始输出**不再逐行塞进任务日志**。
+     * 它一跑就是几百行 "Patching net/minecraft/..."，倒进任务面板里，
+     * 用户要的那几行人话（在下载、在装、装完了）全被淹掉。
+     * 现在只留两类：
+     *   - 实时：一条会自己更新的「安装器运行中 · 已 N 行输出」
+     *   - 收尾：成功就把完整输出存档，失败才贴最后 30 行出来
+     */
+    const outLines = [];
+    const eat = (d) => {
+      for (const l of d.toString().split(/\r?\n/).filter(Boolean)) {
+        outLines.push(l.slice(0, 300));
+        if (outLines.length > 4000) outLines.shift();
+      }
+    };
+    ps.stdout.on('data', eat);
+    ps.stderr.on('data', eat);
+    const tick = setInterval(() => {
+      if (task) tprogress(task, 0, `安装器运行中 · 已输出 ${outLines.length} 行`);
+    }, 3000);
+    ps.on('exit', c => { clearInterval(tick); resolve(c); });
+    ps.on('error', () => { clearInterval(tick); resolve(-1); });
     setTimeout(() => { try { ps.kill(); } catch { } }, 1000 * 60 * 15);
+    // 输出落到文件里，排查时要看随时能翻
+    ps.on('exit', async () => {
+      try {
+        await fsp.mkdir(path.join(CACHE, 'installer'), { recursive: true });
+        await fsp.writeFile(path.join(CACHE, 'installer', `${vid || 'loader'}.log`), outLines.join('\n'), 'utf8');
+      } catch { }
+      ps._novaOut = outLines;
+    });
   });
   tprogress(task, 1);
-  if (code !== 0) throw new Error(`安装器退出码 ${code}，请查看日志。`);
+  if (code !== 0) {
+    // 只在失败时才把安装器的尾巴贴出来 —— 成功时贴它就是噪音
+    const tail = (ps._novaOut || []).slice(-30);
+    if (tail.length) tlog(task, '安装器最后 30 行输出：\n' + tail.join('\n'));
+    throw new Error(`安装器退出码 ${code}。完整输出在 ${path.join(CACHE, 'installer')} 目录下。`);
+  }
   if (!existsSync(path.join(P.versions, vid, `${vid}.json`))) {
     const dirs = await fsp.readdir(P.versions).catch(() => []);
     const cand = dirs.find(d => d.includes(loaderVersion));
