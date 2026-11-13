@@ -526,6 +526,23 @@ async function resolveQuery(raw) {
   return { query: t.query || q0, from: 'raw', original: q0 };
 }
 
+/**
+ * 看压缩包里有什么，判断它到底是模组、资源包还是光影。
+ * CurseForge 整合包的 manifest 不区分类型（只有 projectID/fileID），
+ * 有些包会把资源包也列进 files[]，全丢进 mods 只会让游戏报
+ * “not a valid mod file”，东西也白下。
+ */
+async function sniffContentKind(file) {
+  try {
+    const buf = await fsp.readFile(file);
+    const names = zipEntries(buf).map(e => e.name);
+    if (names.some(n => /^(META-INF\/neoforge\.mods\.toml|META-INF\/mods\.toml|fabric\.mod\.json|quilt\.mod\.json|mcmod\.info)$/i.test(n))) return 'mod';
+    if (names.some(n => /^shaders\//.test(n))) return 'shader';
+    if (names.some(n => /^assets\//.test(n) || n === 'pack.mcmeta')) return 'resourcepack';
+    return 'mod';
+  } catch { return 'mod'; }
+}
+
 async function searchAllSources({ query = '', kind = 'mod', mcVersion = '', loader = '', offset = 0, limit = 30 } = {}) {
   const cfg = await loadConfig();
   const cfKey = (cfg.curseforgeApiKey || '').trim();
@@ -2416,9 +2433,10 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
 
         // manifest 只给 projectID/fileID，模组得一个个按号去要
         tstage(task, '下载模组', parsed.files.length);
-        const modsDir = path.join(P.instance(inst.id), 'mods');
+        const rootDir = P.instance(inst.id);
+        const modsDir = path.join(rootDir, 'mods');
         await fsp.mkdir(modsDir, { recursive: true });
-        let got = 0, missed = 0;
+        let got = 0, missed = 0, moved = 0;
         for (const f of parsed.files) {
           if (task?._cancel) break;
           try {
@@ -2426,22 +2444,57 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
             if (!u) { missed++; continue; }
             let name = decodeURIComponent((u.split('?')[0].split('/').pop() || '').trim());
             if (!/\.jar$/i.test(name)) name = `cf-${f.modId}-${f.fileId}.jar`;
-            await downloadOne(u, path.join(modsDir, safeName(name)), {
+            // 先落到 mods 再按内容挑目录：manifest 里不区分类型，
+            // 有些整合包会把资源包也列进来，一股脑丢 mods 只会让
+            // 游戏报 “not a valid mod file”，东西也白下
+            const tmpDest = path.join(modsDir, safeName(name));
+            await downloadOne(u, tmpDest, {
               source: 'official', timeout: 300000, idleMs: 30000, retries: 1,
             });
+            const actual = await sniffContentKind(tmpDest);
+            if (actual !== 'mod') {
+              const dstDir = path.join(rootDir, actual === 'shader' ? 'shaderpacks' : 'resourcepacks');
+              await fsp.mkdir(dstDir, { recursive: true });
+              const dst = path.join(dstDir, safeName(name).replace(/\.jar$/i, '.zip'));
+              await fsp.rename(tmpDest, dst).catch(() => { });
+              moved++;
+            }
             addBytes(task, 0);
             got++;
           } catch { missed++; }
           tprogress(task, 1, `${got + missed}/${parsed.files.length}`);
         }
-        if (missed) tlog(task, `⚠ ${missed} 个模组没能下载（作者限制第三方分发或已删除），可以进实例里手动补`);
+        if (missed) tlog(task, `⚠ ${missed} 个内容没能下载（作者限制第三方分发或已删除），可以进实例里手动补`);
+        if (moved) tlog(task, `${moved} 个文件其实是资源包/光影，已放进对应目录`);
+
+        // manifest 只列直接内容，前置得靠对账补：NeoForge 那边缺了会整片模组失效
+        tstage(task, '补全前置模组', 1);
+        let depReport = null;
+        try {
+          depReport = await autoInstallMissingDeps(inst.id, {
+            task, mcVersion: parsed.mcVersion, loader: parsed.loader,
+          });
+          if (depReport.fixed.length) tlog(task, `自动补上 ${depReport.fixed.length} 个前置`);
+          if (depReport.failed.length) {
+            tlog(task, `⚠ ${depReport.failed.length} 个前置没能补上：`
+              + depReport.failed.map(x => `${x.modId}（${x.reason}）`).join('；'));
+          }
+        } catch (e) {
+          tlog(task, '前置对账失败（不影响已装内容）: ' + e.message);
+        }
 
         const cnt = { mod: 0, resourcepack: 0, shader: 0 };
         for (const kk of ['mod', 'resourcepack', 'shader']) cnt[kk] = (await listContents(inst.id, kk)).length;
         tlog(task, `模组 ${cnt.mod} / 资源包 ${cnt.resourcepack} / 光影 ${cnt.shader}`);
         await saveConfig({ lastInstance: inst.id });
-        tdone(task, { instance: inst, counts: cnt, missed },
-          missed ? { stage: `已安装，${missed} 个模组需手动补`, warning: `${missed} 个模组作者限制第三方下载` } : {});
+        const stillMissing = (depReport && depReport.failed.length) || 0;
+        tdone(task, { instance: inst, counts: cnt, missed, deps: depReport },
+          (missed || stillMissing)
+            ? {
+              stage: `已安装${missed ? `，${missed} 个内容需手动补` : ''}${stillMissing ? `，${stillMissing} 个前置缺` : ''}`,
+              warning: `${missed ? `${missed} 个内容作者限制第三方下载` : ''}${missed && stillMissing ? '；' : ''}${stillMissing ? `${stillMissing} 个前置无法自动补齐` : ''}`,
+            }
+            : {});
       } catch (e) { tfail(task, e); }
     })();
     return ok(res, { task: taskPublic(task) });

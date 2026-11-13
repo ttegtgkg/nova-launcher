@@ -992,9 +992,41 @@ export async function buildLaunchCommand(profile, task) {
   // classpath：库 + 各级 inherits 的 jar
   const plan = planLibraries(vj, features);
   const cp = [...plan.classpath];
-  for (const id of (vj.__resolvedFrom || [versionId]).slice().reverse()) {
+
+  /*
+   * NeoForge 1.20.5 ~ 1.21.x 的「游戏本体」不由我们提供：BootstrapLauncher 会自己去
+   * libraries/net/minecraft/client/<mc>-<neoForm>/ 找 client-...-srg.jar（没有就现下），
+   * 那个 jar 里已经包含 net.minecraft 的全部类。
+   *
+   * 我们这时再把原版 jar 塞进 classpath，JVM 模块系统就会因为同一个包被两个模块导出
+   * 而拒绝启动：
+   *   Modules minecraft and _1._21._1 export package net.minecraft.server to module neoforge
+   *
+   * 判断依据两个：
+   *   1. 版本 json 带 --fml.neoFormVersion（NeoForge 20.5+ 的特征参数）
+   *   2. srg 产物已经存在，或者 MC 版本落在 1.20.5 ~ 1.21.x 这个区间
+   *      （首次启动时 srg 还没下，只能靠版本区间推断；下完就以后者为准）
+   * 更新的 NeoForge（比如 26.x）恢复成直接用原版 jar，不受这条影响。
+   */
+  const chain = (vj.__resolvedFrom || [versionId]).slice();
+  const parentId = vj.inheritsFrom || (chain.length > 1 ? chain[chain.length - 1] : null);
+  let skipVanillaJar = false;
+  if (parentId) {
+    const gameArgs = (vj.arguments && vj.arguments.game) || [];
+    const nfIdx = gameArgs.indexOf('--fml.neoFormVersion');
+    const neoForm = nfIdx >= 0 ? String(gameArgs[nfIdx + 1] || '') : '';
+    if (neoForm) {
+      const srg = path.join(P.libraries, 'net', 'minecraft', 'client',
+        `${parentId}-${neoForm}`, `client-${parentId}-${neoForm}-srg.jar`);
+      skipVanillaJar = existsSync(srg) || /^1\.(20\.[5-9]|21\.)/.test(parentId);
+    }
+  }
+
+  for (const id of chain.slice().reverse()) {
     const jp = path.join(P.versions, id, `${id}.jar`);
-    if (existsSync(jp)) cp.push(jp);
+    if (!existsSync(jp)) continue;
+    if (skipVanillaJar && id !== versionId) continue;   // 父版本的原版 jar 不加
+    cp.push(jp);
   }
   const sep = ';';
   // 去重

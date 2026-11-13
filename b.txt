@@ -1,0 +1,43 @@
+fix: 三个问题一起修（BeLoong 启动崩溃）
+
+用户贴的日志里暴露了三件事，逐个说明。
+
+1. 致命：模块撞包导致直接退出
+
+   java.lang.module.ResolutionException:
+     Modules minecraft and _1._21._1 export package net.minecraft.server to module neoforge
+
+   我们把 inherit 链上的原版 jar 无条件塞进了 classpath。但 NeoForge 1.20.5 ~ 1.21.x
+   的游戏本体是 BootstrapLauncher 自己装的 srg jar
+   （libraries/net/minecraft/client/1.21.1-20240808.144430/client-...-srg.jar），
+   那里面已经含 net.minecraft 全部类，再塞一份原版 jar 就是两个模块导出同一个包。
+
+   修：判据用 --fml.neoFormVersion（NeoForge 20.5+ 的特征参数），命中时
+     - srg 产物已存在 → 一定走 srg，跳过原版 jar
+     - 首次启动 srg 还没下 → 按 MC 版本区间 1.20.5~1.21.x 推断，同样跳过
+   更新的 NeoForge（26.x，实测不需要 srg jar）和原版实例不受影响。
+
+   实测三种版本：
+     neoforge-21.1.219  → classpath 里没有 1.21.1.jar（原来有）
+     neoforge-26.1.2.125 → 仍然带 26.1.2.jar（保持原样）
+     1.21.1（原版）      → 仍然带 1.21.1.jar（必须）
+
+2. 11 个前置缺失
+
+   manifest 的 files[] 只列直接内容，不列前置。NeoForge 因此报
+   Missing or unsupported mandatory dependencies（bookshelf / puzzleslib /
+   ftblibrary / twilightforest / cloth_config …）并让相关模组失效。
+
+   修：整合包下载完成后自动跑一次前置对账补全，补上的和补不上的都写进任务日志；
+   补不上时任务标「部分完成」而不是「成功」。
+
+3. 资源包被当成模组塞进 mods
+
+   日志里 Skipping jar. File mods\cf-888795-6670772.jar is not a valid mod file。
+   那个文件有 17.2 MB、10241 个条目，是个资源包 —— CF 整合包的 manifest 不区分类型，
+   我们一股脑下载到 mods 目录。
+
+   修：下载后按内容判断（mods.toml / fabric.mod.json / pack.mcmeta / shaders/）
+   再决定落到 mods、resourcepacks 还是 shaderpacks。
+
+   顺带把用户实例里已经放错的那个移到了 resourcepacks。
