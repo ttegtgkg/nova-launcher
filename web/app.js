@@ -2465,8 +2465,19 @@ async function renderTabSettings(inst, body) {
       请输入实例名以确认：</p>
       <div class="field"><input type="text" id="confirmName" placeholder="${esc(inst.name)}"></div>`, {
       okText: '确认删除', onOk: async (box) => {
-        if ($('#confirmName', box).value.trim() !== inst.name) {
-          toast('名字不一致', '请完整输入实例名后再删除', 'warn', 4000);
+        // 这个输入是为了拦住「手滑点确认」，不是考眼力。
+        // 大小写、首尾空格、全角半角都不该成为障碍 ——
+        // 实例叫 BeLoong 而用户敲 Beloong，肉眼根本分不出来。
+        const norm = (s) => String(s || '')
+          .replace(/[\uFF01-\uFF5E]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))  // 全角转半角
+          .replace(/\s+/g, '')
+          .toLowerCase();
+        const typed = $('#confirmName', box).value;
+        if (norm(typed) !== norm(inst.name)) {
+          const hint = !typed.trim() ? '请先输入实例名'
+            : norm(typed).length !== norm(inst.name).length ? '长度对不上，再核对一下'
+              : '差的只是大小写或空格？再仔细看看';
+          toast('名字不一致', hint, 'warn', 4000);
           return false;
         }
         await apiPost('/api/instances/delete', { id: inst.id });
