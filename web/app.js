@@ -3495,6 +3495,29 @@ async function handleDroppedFiles(files) {
     await apiPost('/api/game/clear-log').catch(() => { });
     S.logs = []; $('#logBox').innerHTML = '';
   };
+  // 日志能选中复制之外，再给一个一键复制整份的出口 ——
+  // 出问题时要的是把整段日志贴给别人，拖着选 800 行不现实
+  if ($('#btnCopyLog')) $('#btnCopyLog').onclick = async () => {
+    const text = (S.logs || []).map(l => l.line).join('\n');
+    if (!text) return toast('没有日志', '启动游戏后这里才会有输出', 'warn');
+    try {
+      await navigator.clipboard.writeText(text);
+      toast('已复制', `${S.logs.length} 行日志已放入剪贴板`, 'ok');
+    } catch (e) {
+      // 剪贴板被拒时退回选区 + 老接口，两条都不行再说
+      try {
+        const box = $('#logBox');
+        const range = document.createRange();
+        range.selectNodeContents(box);
+        const sel = window.getSelection();
+        sel.removeAllRanges(); sel.addRange(range);
+        document.execCommand('copy');
+        toast('已复制', `${S.logs.length} 行日志已放入剪贴板`, 'ok');
+      } catch {
+        toast('复制失败', '可以手动选中日志后按 Ctrl+C', 'error');
+      }
+    }
+  };
   $('#btnKillGame').onclick = async () => {
     try { await apiPost('/api/kill'); toast('已请求结束游戏', '', 'warn'); }
     catch (e) { toast('操作失败', e.message, 'error'); }

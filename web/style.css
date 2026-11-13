@@ -1401,9 +1401,16 @@ input[type=range]::-webkit-slider-thumb:active { cursor: grabbing; transform: sc
   user-select: none;
   -webkit-user-drag: none;
 }
-/* 但输入框、日志、代码块要能选中复制 */
+/*
+ * 输入框、日志、代码块要能选中复制。
+ * 这里必须把**后代元素**也列出来：上面的 * 给每个元素都写了 user-select: none，
+ * 而日志内容是 <span> 包起来的，光给 .log-box 设 text 是没用的 ——
+ * 子元素的 none 会盖过父元素，结果整段日志一个字都选不中。
+ */
 input, textarea, pre, code, .log-box, .detail-desc, .modal pre,
-.autotune-box, .notice-row {
+.autotune-box, .notice-row,
+pre *, code *, .log-box *, .detail-desc *, .modal pre *,
+.autotune-box *, .notice-row * {
   -webkit-user-select: text;
   user-select: text;
 }
