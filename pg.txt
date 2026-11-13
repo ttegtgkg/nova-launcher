@@ -1,0 +1,24 @@
+fix: 下载大文件时进度条卡在 0%
+
+跑 Fabulously Optimized（Modrinth 整合包，要 MC 26.3）时任务卡在
+「游戏本体 jar」十分钟不动，进度一直 0%。查下来不是卡死，是**在下载**：
+
+  字节: 12887902 / 173981     ← 已下 12.8 MB，总量只记了 170 KB
+
+前端画进度条用 bytesDone / bytesTotal。downloadOne 的 onProgress 只累加
+bytesDone，而 bytesTotal 停在之前某个小文件（170 KB 的版本 json）上，
+分母不更新 → 进度条纹丝不动。25 MB 的 jar 在 20 KB/s 的网速下要下十几分钟，
+用户看到的就是「卡死」。
+
+installJava 那段早就顺手处理了（onProgress 的第二个参数 total），
+但另外四处漏了：游戏本体 jar、CF 单文件安装、CF 整合包 zip、存档下载。
+
+改：
+
+- core.mjs 新增 tplanBytes(task, size)：下载前先把总量登进去
+- 所有 downloadOne 的 onProgress 统一吃 (got, total)，并用
+  Math.max 更新 bytesTotal（多链接竞速时 total 可能来回变，取大值）
+- mc.mjs 那处额外用 tplanBytes 提前登记，onProgress 的 total 作兜底
+
+顺带说明：这次是因为「多跑几个整合包」才发现的。之前只测 BeLoong
+（NeoForge 1.21.1，jar 早就在本地缓存着），永远碰不到下大文件这条路径。

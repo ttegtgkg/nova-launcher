@@ -1882,10 +1882,11 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
         let lastBytes = 0;
         await downloadOne(url, tmpFile, {
           source: 'official', timeout: 600000, retries: 2, idleMs: 30000,
-          onProgress: (got) => {
+          onProgress: (got, total) => {
             if (!task) return;
             if (got < lastBytes) lastBytes = 0;
             if (got > lastBytes) { addBytes(task, got - lastBytes); lastBytes = got; }
+            if (total) task.bytesTotal = Math.max(task.bytesTotal || 0, total);
           },
         });
         taddFile(task, 0);
@@ -2118,10 +2119,11 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
         let last = 0;
         await downloadOne(url, dest, {
           source: 'official', timeout: 300000, retries: 2, idleMs: 30000,
-          onProgress: (got) => {
+          onProgress: (got, total) => {
             if (!task) return;
             if (got < last) last = 0;
             if (got > last) { addBytes(task, got - last); last = got; }
+            if (total) task.bytesTotal = Math.max(task.bytesTotal || 0, total);
           },
         });
         taddFile(task, 0);
@@ -2387,10 +2389,11 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Ou
         let last = 0;
         await downloadOne(url, zipPath, {
           source: 'official', timeout: 900000, idleMs: 30000, retries: 2,
-          onProgress: (got) => {
+          onProgress: (got, total) => {
             if (!task) return;
             if (got < last) last = 0;
             if (got > last) { addBytes(task, got - last); last = got; }
+            if (total) task.bytesTotal = Math.max(task.bytesTotal || 0, total);
           },
         });
         taddFile(task, 0);

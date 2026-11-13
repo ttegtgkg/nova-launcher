@@ -6,7 +6,7 @@ import os from 'node:os';
 import { spawn, spawnSync } from 'node:child_process';
 import {
   P, SHARED, RUNTIME, CACHE, exists, existsSync, readJson, writeJson, httpJson, httpText,
-  downloadOne, downloadBatch, tlog, tstage, tprogress, addBytes, taddFile, offlineUuid, sha1File, zipExtractAll,
+  downloadOne, downloadBatch, tlog, tstage, tprogress, addBytes, taddFile, tplanBytes, offlineUuid, sha1File, zipExtractAll,
   zipEntries, zipRead,
 } from './core.mjs';
 
@@ -483,12 +483,20 @@ export async function installVersion(versionId, { source = 'auto', concurrency =
   const jarPath = path.join(vdir, `${versionId}.jar`);
   if (vj.downloads?.client?.url) {
     let lastBytes = 0;
+    // 先把总量登进去：前端按 bytesDone/bytesTotal 画进度条，
+    // 只在下载过程中累加 bytesDone 会把分母一直停在几万字节，
+    // 于是「下 25 MB 的 jar」看起来像卡在 0% 一动不动。
+    // 先把总量登进去，同时用 onProgress 的 total 兜底：
+    // 前端按 bytesDone/bytesTotal 画进度条，分母不更新的话，
+    // 下一个 25 MB 的 jar 能纹丝不动地卡在 0% 十几分钟。
+    tplanBytes(task, vj.downloads.client.size);
     await downloadOne(vj.downloads.client.url, jarPath, {
       source, sha1: vj.downloads.client.sha1, size: vj.downloads.client.size, timeout: 180000,
-      onProgress: (got) => {
+      onProgress: (got, total) => {
         if (!task) return;
         if (got < lastBytes) lastBytes = 0;
         if (got > lastBytes) { addBytes(task, got - lastBytes); lastBytes = got; }
+        if (total) task.bytesTotal = Math.max(task.bytesTotal || 0, total);
       },
     });
     taddFile(task, 0);

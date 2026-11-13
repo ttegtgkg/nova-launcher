@@ -326,6 +326,18 @@ export function tprogress(t, addDone = 0, detail = '') {
   if (detail) t.detail = detail;
 }
 
+/**
+ * 下载前先把「这次要下多少字节」登进任务。
+ *
+ * 前端画进度条用的是 bytesDone / bytesTotal，而 downloadOne 的 onProgress
+ * 只累加 bytesDone。总量不提前登记的话，分母会一直停在之前那个小文件上 ——
+ * 下一个 25 MB 的 jar 或者 170 MB 的整合包，进度条能纹丝不动地卡十几分钟，
+ * 像死了一样。
+ */
+export function tplanBytes(t, size) {
+  if (t && Number(size) > 0) t.bytesTotal = (t.bytesTotal || 0) + Number(size);
+}
+
 /** 单个文件下载完成后记账（用于不经过 downloadBatch 的直接下载） */
 export function taddFile(t, size = 0) {
   if (!t) return;
