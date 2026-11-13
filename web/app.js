@@ -1928,7 +1928,8 @@ async function checkDepsQuiet(instanceId) {
 function depsBannerHtml(deps) {
   const missing = deps?.missing || [];
   const wrong = deps?.wrongLoader || [];
-  if (!missing.length && !wrong.length) return '';
+  const outdated = deps?.outdated || [];
+  if (!missing.length && !wrong.length && !outdated.length) return '';
 
   const list = missing.map(m => {
     const by = (m.neededBy || []).map(f =>
@@ -1938,10 +1939,27 @@ function depsBannerHtml(deps) {
       <span class="muted">← 被</span> ${by} <span class="muted">需要</span></li>`;
   }).join('');
 
+  // 装了但版本不够 —— 这种东西不列出来，游戏一起来就是一屏 "Error loading mods"，
+  // 而检查页还显示"一切正常"，两边打架
+  const outdatedHtml = outdated.length
+    ? `<div class="dw-head" style="margin-top:${(missing.length || wrong.length) ? '10px' : '0'}">
+         ⚠ ${outdated.length} 个已装但版本不够，游戏会拒绝启动
+       </div>
+       <ul class="dw-list">${outdated.map(o => `<li>
+         <b>${esc(o.modId)}</b>
+         <span class="muted">需要</span> <code>${esc(o.need)}</code>
+         <span class="muted">，现在是</span> <code>${esc(o.have)}</code>
+         ${o.file ? `<span class="muted">· ${esc(o.file)}</span>` : '<span class="muted">· 游戏/加载器自带</span>'}
+       </li>`).join('')}</ul>
+       <span class="muted" style="font-size:11.5px">
+         版本太高或太低都会报错。要么把列表里那个模组换成和它要的版本配套的旧版/新版，
+         要么升级/降级被要求的那个组件。<b>换错方向会越修越多</b>，注意看两边的版本号。</span>`
+    : '';
+
   // 只认对面加载器的元数据 —— 这种模组装了也不会被游戏读，得单独说清楚，
   // 否则用户只会觉得「我装了模组怎么没生效」
   const wrongHtml = wrong.length
-    ? `<div class="dw-head" style="margin-top:${missing.length ? '10px' : '0'}">
+    ? `<div class="dw-head" style="margin-top:${(missing.length || outdated.length) ? '10px' : '0'}">
          ⚠ ${wrong.length} 个模组不适用于当前加载器${deps.loader ? `（${esc(loaderName(deps.loader))}）` : ''}，游戏不会加载它们
        </div>
        <ul class="dw-list">${wrong.slice(0, 6).map(f =>
@@ -1957,12 +1975,12 @@ function depsBannerHtml(deps) {
        <div class="row-gap">
          <button class="btn btn-primary btn-sm" data-fix-deps="1">一键补齐</button>
          <span class="muted" style="font-size:11.5px">
-           从 Modrinth 自动找适配当前版本的前置；点上面的模组名可以直接卸载它。
+           从 Modrinth / CurseForge 自动找适配当前版本的前置；点上面的模组名可以直接卸载它。
            前置本身不支持这个游戏版本时，卸掉需要它的模组才是正解。</span>
        </div>`
     : '';
 
-  return `<div class="deps-warn">${missingHtml}${wrongHtml}</div>`;
+  return `<div class="deps-warn">${missingHtml}${outdatedHtml}${wrongHtml}</div>`;
 }
 
 async function renderTabContent(inst, body, kind) {

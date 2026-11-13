@@ -37,13 +37,88 @@ const MAX_JAR_BYTES = 96 * 1024 * 1024;
  */
 const jarCache = new Map();
 
+/* ------------------------------------------------------- 版本号比较 */
+
+/**
+ * 版本号比较：21.1.81 vs 21.1.75 → 1；13.0.8 vs 13.0.11 → -1。
+ * 只处理数字段，字母后缀（如 1.21.1-3.15.0 里的 3.15.0）也按段比。
+ * 返回 -1 / 0 / 1，无法比较时返回 null。
+ */
+function cmpVer(a, b) {
+  const seg = (v) => String(v || '').toLowerCase()
+    .replace(/[^\d.a-z-]/g, '.')
+    .split(/[.\-+]/)
+    .filter(Boolean);
+  const sa = seg(a), sb = seg(b);
+  const n = Math.max(sa.length, sb.length);
+  for (let i = 0; i < n; i++) {
+    const x = sa[i], y = sb[i];
+    if (x === undefined) return -1;
+    if (y === undefined) return 1;
+    const nx = /^\d+$/.test(x) ? Number(x) : null;
+    const ny = /^\d+$/.test(y) ? Number(y) : null;
+    if (nx !== null && ny !== null) {
+      if (nx !== ny) return nx < ny ? -1 : 1;
+    } else if (x !== y) {
+      // 数字优先于字母（1.2.0 > 1.2.0-beta）
+      if (nx !== null) return 1;
+      if (ny !== null) return -1;
+      return x < y ? -1 : 1;
+    }
+  }
+  return 0;
+}
+
+/**
+ * 判断 actual 是否落在 Maven 风格的 range 里。
+ * 支持：[1.0,2.0)  (1.0,2.0]  [1.0,)  (,2.0]  *  空  以及裸版本号（当作 >= 处理）。
+ */
+function inRange(actual, range) {
+  const r = String(range || '').trim();
+  if (!r || r === '*') return true;
+  const av = String(actual || '').trim();
+  if (!av) return true;          // 拿不到实际版本就不拦，避免误报
+
+  // 裸版本号：NeoForge 里写 "1.2.8" 意思是「至少这个版本」
+  if (!/^[\[(]/.test(r)) {
+    const c = cmpVer(av, r);
+    return c === null ? true : c >= 0;
+  }
+
+  const m = /^([\[(])\s*([^,\])]*)\s*,\s*([^,\])]*)\s*([\])])$/.exec(r);
+  if (!m) {
+    // 「[1.0]」这种单点精确匹配
+    const one = /^[\[(]\s*([^,\])]+)\s*[\])]$/.exec(r);
+    if (one) { const c = cmpVer(av, one[1]); return c === 0; }
+    return true;
+  }
+  const [, loOpen, lo, hi, hiClose] = m;
+  if (lo) {
+    const c = cmpVer(av, lo);
+    if (c === null) return true;
+    if (loOpen === '[' ? c < 0 : c <= 0) return false;
+  }
+  if (hi) {
+    const c = cmpVer(av, hi);
+    if (c === null) return true;
+    if (hiClose === ']' ? c > 0 : c >= 0) return false;
+  }
+  return true;
+}
+
 /* ------------------------------------------------------------------ 单个 jar */
 
+/** 解析结果里除了 ids，还要带上「每个 id 的版本号」—— 光有 id 判不出够不够新 */
 function parseFabricJson(text) {
   let j; try { j = JSON.parse(text); } catch { return null; }
   const meta = j.quilt_loader?.metadata || j;
   const ids = new Set();
-  if (meta.id) ids.add(String(meta.id).toLowerCase());
+  const versions = new Map();
+  if (meta.id) {
+    const id = String(meta.id).toLowerCase();
+    ids.add(id);
+    if (meta.version) versions.set(id, String(meta.version));
+  }
   // provides 是「我也能顶替这些 id」的声明
   const prov = meta.provides;
   if (Array.isArray(prov)) {
@@ -57,19 +132,24 @@ function parseFabricJson(text) {
   for (const [k, v] of Object.entries(bag)) {
     deps.push({ modId: String(k).toLowerCase(), range: typeof v === 'string' ? v : '', type: 'required' });
   }
-  return { ids, deps };
+  return { ids, versions, deps };
 }
 
 function parseToml(text) {
   const ids = new Set();
+  const versions = new Map();
   const deps = [];
 
-  // 只认 [[mods]] 段里声明的 modId
+  // 只认 [[mods]] 段里声明的 modId（和它的 version）
   for (const seg of text.split(/^\[\[mods\]\]/m).slice(1)) {
     const stop = seg.search(/^\[\[/m);
     const body = stop >= 0 ? seg.slice(0, stop) : seg;
     const m = /^\s*modId\s*=\s*["']([^"']+)["']/m.exec(body);
-    if (m) ids.add(m[1].toLowerCase());
+    if (!m) continue;
+    const id = m[1].toLowerCase();
+    ids.add(id);
+    const vm = /^\s*version\s*=\s*["']([^"']*)["']/m.exec(body);
+    if (vm && vm[1] && !vm[1].includes('${')) versions.set(id, vm[1]);
   }
 
   // [[dependencies.<owner>]] 每段一个被依赖者
@@ -91,7 +171,7 @@ function parseToml(text) {
       owner: blocks[i].head.replace(/^dependencies\./i, '').toLowerCase(),
     });
   }
-  return { ids, deps };
+  return { ids, versions, deps };
 }
 
 /**
@@ -113,6 +193,7 @@ async function parseJar(file, depth = 0) {
   if (hit && hit.key === key) return hit.data;
 
   const ids = new Set();
+  const versions = new Map();
   const fabricDeps = [];
   const tomlDeps = [];
   let hasFabric = false;
@@ -127,7 +208,7 @@ async function parseJar(file, depth = 0) {
       const e = find(name);
       if (!e) continue;
       const r = parseFabricJson(zipRead(buf, e).toString('utf8'));
-      if (r) { for (const id of r.ids) ids.add(id); fabricDeps.push(...r.deps); hasFabric = true; }
+      if (r) { for (const id of r.ids) ids.add(id); for (const [k, vv] of (r.versions || [])) versions.set(k, vv); fabricDeps.push(...r.deps); hasFabric = true; }
       break;
     }
     // ---- Forge / NeoForge 段 ----
@@ -135,6 +216,7 @@ async function parseJar(file, depth = 0) {
     if (tomlEntry) {
       const r = parseToml(zipRead(buf, tomlEntry).toString('utf8'));
       for (const id of r.ids) ids.add(id);
+      for (const [k, vv] of (r.versions || [])) versions.set(k, vv);
       tomlDeps.push(...r.deps);
       hasToml = true;
     }
@@ -169,13 +251,14 @@ async function parseJar(file, depth = 0) {
             const ie = inner.find(x => x.name === nm);
             if (!ie) continue;
             const r = parseFabricJson(zipRead(innerBuf, ie).toString('utf8'));
-            if (r) { for (const id of r.ids) ids.add(id); fabricDeps.push(...r.deps); hasFabric = true; }
+            if (r) { for (const id of r.ids) ids.add(id); for (const [k, vv] of (r.versions || [])) versions.set(k, vv); fabricDeps.push(...r.deps); hasFabric = true; }
             break;
           }
           const it = inner.find(x => x.name === 'META-INF/neoforge.mods.toml' || x.name === 'META-INF/mods.toml');
           if (it) {
             const r = parseToml(zipRead(innerBuf, it).toString('utf8'));
             for (const id of r.ids) ids.add(id);
+            for (const [k, vv] of (r.versions || [])) versions.set(k, vv);
             tomlDeps.push(...r.deps);
             hasToml = true;
           }
@@ -184,13 +267,13 @@ async function parseJar(file, depth = 0) {
     }
   } catch { /* 不是 zip / 读不了，当空 */ }
 
-  const data = { ids, fabricDeps, tomlDeps, hasFabric, hasToml };
+  const data = { ids, versions, fabricDeps, tomlDeps, hasFabric, hasToml };
   jarCache.set(file, { key, data });
   return data;
 }
 
 function emptyJar() {
-  return { ids: new Set(), fabricDeps: [], tomlDeps: [], hasFabric: false, hasToml: false };
+  return { ids: new Set(), versions: new Map(), fabricDeps: [], tomlDeps: [], hasFabric: false, hasToml: false };
 }
 
 /* ------------------------------------------------------------ 整个实例 */
@@ -199,11 +282,17 @@ const KIND_DIR = { mod: 'mods', resourcepack: 'resourcepacks', shader: 'shaderpa
 
 /**
  * 扫描实例的 mods 目录，对账出缺失的必需前置。
- * 返回 { scanned, loader, provided: [modId], missing: [{ modId, range, neededBy: [文件名] }],
+ * 返回 { scanned, loader,
+ *        provided: [modId],
+ *        missing:   [{ modId, range, neededBy }],           // 根本没有
+ *        outdated:  [{ modId, need, have, neededBy, file }], // 装了但版本不够
  *        wrongLoader: [文件名], issues }
  *
  * 按实例的加载器只看对应那套元数据。多加载器模组把一个 jar 里塞三份声明，
  * 不区分的话 NeoForge 实例会凭空要求 fabric-api 这种根本装不上的前置。
+ *
+ * 「装了但版本不够」必须单独报：以前只判 provided.has(modId)，
+ * 于是检查器说齐了、NeoForge 却说版本不满足，两边打架。
  */
 export async function checkInstanceDeps(instanceId, { kind = 'mod', loader: loaderArg = null } = {}) {
   const dir = path.join(P.instance(instanceId), KIND_DIR[kind] || 'mods');
@@ -211,18 +300,27 @@ export async function checkInstanceDeps(instanceId, { kind = 'mod', loader: load
   try {
     files = (await fsp.readdir(dir)).filter(f => /\.jar$/i.test(f) && !/\.disabled$/i.test(f));
   } catch {
-    return { scanned: 0, loader: loaderArg, provided: [], missing: [], wrongLoader: [], dir, issues: [] };
+    return { scanned: 0, loader: loaderArg, provided: [], missing: [], outdated: [], wrongLoader: [], dir, issues: [] };
   }
 
   let loader = loaderArg;
+  let meta = null;
   if (!loader) {
-    const meta = await readJson(path.join(P.instance(instanceId), 'instance.json'), null);
+    meta = await readJson(path.join(P.instance(instanceId), 'instance.json'), null);
     loader = meta?.loader || null;
   }
+  if (!meta) meta = await readJson(path.join(P.instance(instanceId), 'instance.json'), null);
   const usesFabric = loader === 'fabric' || loader === 'quilt';
   const usesToml = loader === 'forge' || loader === 'neoforge';
 
-  const provided = new Map();   // modId -> 文件名
+  // 加载器本身的版本也算「提供」，否则 neoforge 这种内置依赖永远判成缺失
+  const provided = new Map();   // modId -> { file, version }
+  const put = (id, file, ver) => {
+    if (!provided.has(id)) provided.set(id, { file, version: ver || null });
+  };
+  if (meta?.loader && meta?.loaderVersion) put(String(meta.loader).toLowerCase(), null, String(meta.loaderVersion));
+  if (meta?.version) put('minecraft', null, String(meta.version));
+
   const allNeeds = [];
   const issues = [];
   const wrongLoader = [];
@@ -230,7 +328,7 @@ export async function checkInstanceDeps(instanceId, { kind = 'mod', loader: load
   for (const f of files) {
     const r = await parseJar(path.join(dir, f));
     // 提供的 id 合并算：多加载器 jar 里 id 一般三份一样，合并不会误伤
-    for (const id of r.ids) if (!provided.has(id)) provided.set(id, f);
+    for (const id of r.ids) put(id, f, r.versions ? r.versions.get(id) : null);
 
     let deps;
     if (usesFabric) deps = r.fabricDeps;
@@ -245,14 +343,35 @@ export async function checkInstanceDeps(instanceId, { kind = 'mod', loader: load
   }
 
   const missingMap = new Map();
+  const outdatedMap = new Map();
   for (const n of allNeeds) {
     if (n.type && n.type !== 'required') continue;
-    if (!n.modId || BUILTIN.has(n.modId)) continue;
-    if (provided.has(n.modId)) continue;
-    if (!missingMap.has(n.modId)) missingMap.set(n.modId, { modId: n.modId, range: n.range, neededBy: [] });
-    const rec = missingMap.get(n.modId);
-    if (!rec.neededBy.includes(n.jar)) rec.neededBy.push(n.jar);
-    if (!rec.range && n.range) rec.range = n.range;
+    if (!n.modId) continue;
+
+    const got = provided.get(n.modId);
+    if (!got) {
+      // BUILTIN 是游戏/加载器自带的，没装任何 jar 也可能满足（版本已经放进 provided 了）
+      if (BUILTIN.has(n.modId)) continue;
+      if (!missingMap.has(n.modId)) missingMap.set(n.modId, { modId: n.modId, range: n.range, neededBy: [] });
+      const rec = missingMap.get(n.modId);
+      if (!rec.neededBy.includes(n.jar)) rec.neededBy.push(n.jar);
+      if (!rec.range && n.range) rec.range = n.range;
+      continue;
+    }
+
+    // 装了，但版本够不够？不判这一步，就会出现「检查说齐了、NeoForge 说版本不满足」
+    const haveVer = got.version;
+    if (haveVer && n.range && !inRange(haveVer, n.range)) {
+      const key = `${n.modId}@${n.range}`;
+      if (!outdatedMap.has(key)) {
+        outdatedMap.set(key, {
+          modId: n.modId, need: n.range, have: haveVer,
+          file: got.file, neededBy: [],
+        });
+      }
+      const rec = outdatedMap.get(key);
+      if (!rec.neededBy.includes(n.jar)) rec.neededBy.push(n.jar);
+    }
   }
 
   return {
@@ -261,6 +380,7 @@ export async function checkInstanceDeps(instanceId, { kind = 'mod', loader: load
     loader,
     provided: [...provided.keys()].sort(),
     missing: [...missingMap.values()],
+    outdated: [...outdatedMap.values()],
     wrongLoader,
     issues: issues.slice(0, 20),
   };

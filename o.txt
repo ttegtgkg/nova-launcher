@@ -1,0 +1,33 @@
+fix: 依赖检查补上版本校验（"齐了"但版本不够）
+
+用户截图里 NeoForge 报的两条，暴露的是检查器的漏洞：
+
+  Mod ftblibrary requires architecture 13.0.11 or above
+  Currently, architecture is 13.0.8
+  Mod irons_lib requires neoforge 21.1.231 or above
+  Currently, neoforge is 21.1.219
+
+问题在于 checkInstanceDeps 只判断了 provided.has(modId)，也就是「这个 mod 在不在」，
+从来不看版本够不够。于是检查页显示一切正常，游戏却拒绝启动，两边打架。
+
+更糟的是我上一轮补前置时抓的都是最新版，正好把这两个冲突撞了出来：
+  architectury 13.0.8（整合包带的）  vs  ftb-library 2101.1.39（要 13.0.11+）
+  neoforge     21.1.219（整合包指定）vs  irons_lib 2.3.0（要 21.1.231+）
+
+改：
+
+- parseToml / parseFabricJson 额外取出每个 mod 自己的 version
+- parseJar 把 versions 一起返回（id → 版本）
+- 新增 cmpVer() 与 inRange()：支持 [1.0,2.0) 这种 Maven 风格范围、
+  裸版本号（当作「至少」）、单点精确匹配；拿不到实际版本时不拦截，避免误报
+- provided 从 Set 改成 Map<modId, {file, version}>
+- 实例自己的加载器版本（neoforge 21.1.219）和 MC 版本也放进 provided，
+  否则 neoforge 这种内置依赖永远判成缺失、或者判不出高下
+- 新增返回值 outdated：[{ modId, need, have, file, neededBy }]
+- 前端在模组页显示「已装但版本不够」，给出两边版本号并提示
+  「换错方向会越修越多」
+
+实测用户那个 BeLoong 实例，现在能报出两处：
+
+  architectury: 需要 [13.0.11,)，实际 13.0.8
+  neoforge:     需要 [21.1.221,)，实际 21.1.219（游戏/加载器自带）
