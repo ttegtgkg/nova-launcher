@@ -1012,10 +1012,13 @@ async function openDetail(projectId, opts = {}) {
     // 结果 CF 来源的整合包一点「详情」就是 404。
     const isCf = source === 'curseforge';
     const q = encodeURIComponent(projectId);
+    // 整合包自带游戏版本、装的时候新建实例，拿当前实例的版本去问它有哪些文件，
+    // 结果一定是 0 个（比如 1.20.1 的整合包配 26.1.2 的实例）
+    const matchInst = inst && kind !== 'modpack';
     const [prRes, verRes] = await Promise.all([
       apiGet(isCf ? `/api/cf/project?id=${q}` : `/api/mr/project?id=${q}`),
       isCf
-        ? apiGet(`/api/cf/files?id=${q}${inst ? `&mcVersion=${encodeURIComponent(inst.version)}&loader=${encodeURIComponent(inst.loader || '')}` : ''}`)
+        ? apiGet(`/api/cf/files?id=${q}${matchInst ? `&mcVersion=${encodeURIComponent(inst.version)}&loader=${encodeURIComponent(inst.loader || '')}` : ''}`)
           .then(r => ({ versions: cfFilesAsVersions(r.files) }))
           .catch(() => ({ versions: [] }))
         : apiGet('/api/mr/versions?project=' + q).catch(() => ({ versions: [] })),
@@ -1080,9 +1083,9 @@ async function openDetail(projectId, opts = {}) {
 
         <div class="detail-section">
           <div class="sec-title">
-            可用版本 <span class="st-count" id="verCount">共 ${versions.length} 个${inst ? ' · 当前实例 ' + esc(inst.name) : ''}</span>
+            可用版本 <span class="st-count" id="verCount">共 ${versions.length} 个${inst && !isPack ? ' · 当前实例 ' + esc(inst.name) : ''}</span>
             <span class="st-spacer"></span>
-            ${inst ? `<label class="switch-line"><input type="checkbox" id="onlyMatch"> 只看匹配</label>` : ''}
+            ${inst && !isPack ? `<label class="switch-line"><input type="checkbox" id="onlyMatch"> 只看匹配</label>` : ''}
           </div>
           <div class="ver-wrap">
             <table class="ver-table">
@@ -1133,10 +1136,11 @@ async function openDetail(projectId, opts = {}) {
       const matchCount = versions.filter(matchFn).length;
 
       // 标题里显示「匹配几个」，让用户一眼知道能不能装在当前实例
+      // 整合包不装进当前实例，这句对它是误导
       const cnt = $('#verCount');
       if (cnt) {
         cnt.innerHTML = `共 ${versions.length} 个`
-          + (inst ? ` · 当前实例 ${esc(inst.name)} 匹配 <b style="color:${matchCount ? 'var(--ok)' : 'var(--warn)'}">${matchCount}</b> 个` : '');
+          + (inst && !isPack ? ` · 当前实例 ${esc(inst.name)} 匹配 <b style="color:${matchCount ? 'var(--ok)' : 'var(--warn)'}">${matchCount}</b> 个` : '');
       }
 
       let list = versions.filter(v => !only || matchFn(v));
@@ -1153,12 +1157,13 @@ async function openDetail(projectId, opts = {}) {
           const hasLoader = !inst || inst.loader === 'vanilla'
             || versions.some(v => (v.loaders || []).includes(inst.loader));
           const hasMc = !inst || versions.some(v => (v.gameVersions || []).includes(inst.version));
-          if (!hasLoader) why = `该项目没有 ${esc(loaderName(inst?.loader))} 版本，无法装进当前实例`;
+          if (isPack) why = '没有同时匹配的构建';
+          else if (!hasLoader) why = `该项目没有 ${esc(loaderName(inst?.loader))} 版本，无法装进当前实例`;
           else if (!hasMc) why = `没有适配 Minecraft ${esc(inst?.version || '')} 的版本`;
           else why = '没有同时匹配当前版本与加载器的构建';
         }
         tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;padding:26px;color:var(--text-mute);line-height:1.7">
-          ${why}<br><span style="font-size:11px">取消勾选「只看匹配」可查看全部版本</span></td></tr>`;
+          ${why}${isPack ? '' : '<br><span style="font-size:11px">取消勾选「只看匹配」可查看全部版本</span>'}</td></tr>`;
         return;
       }
       tbody.innerHTML = list.slice(0, 120).map(v => {
